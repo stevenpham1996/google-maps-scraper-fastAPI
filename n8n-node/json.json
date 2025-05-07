@@ -1,0 +1,23 @@
+{
+    "nodes": [
+      {
+        "parameters": {
+          "url": "http://100.95.78.54:8001/scrape-get?query=hotels%20in%2098392&max_places=100&lang=en&headless=true",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          220,
+          0
+        ],
+        "id": "9738622e-6a34-483f-87e4-7f0cda074bff",
+        "name": "HTTP Request"
+      }
+    ],
+    "connections": {},
+    "pinData": {},
+    "meta": {
+      "instanceId": "bfc265a0402eb6543e6cbf43d37210f6fa8cb72736676656a159075d75879e79"
+    }
+  }
