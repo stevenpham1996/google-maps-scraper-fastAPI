@@ -12,6 +12,9 @@ If using n8n or other automation, use the /scrape-get endpoint for it to return 
 
 simple install, copy files and run docker compose up -d
 
+Intened to be used with this n8n build: 
+https://github.com/conor-is-my-name/n8n-autoscaling 
+
 ## API Endpoints
 
 ### POST `/scrape`
