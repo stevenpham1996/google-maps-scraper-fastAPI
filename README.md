@@ -1,6 +1,6 @@
 # Google Maps Scraper API
 
-A FastAPI service for scraping Google Maps data based on search queries.
+A FastAPI service for scraping Google Maps data based on search queries. Ideal for n8n users.
 
 Very high performance, watch out for rate limiting!
 
