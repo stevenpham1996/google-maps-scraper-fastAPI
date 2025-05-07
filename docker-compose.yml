@@ -12,8 +12,6 @@ services:
     # Optional: Add environment variables if needed for configuration
     # environment:
     #   - HEADLESS_MODE=true
-    networks:
-      - shark
     cpu_shares: 1024 # Add cpu_shares here if not using Swarm mode
 #   deploy:
 #      replicas: 4
@@ -21,7 +19,3 @@ services:
 #        limits:
 #          cpus: '1'
 #          memory: 2G
-
-networks:
-  shark:
-   external: true
