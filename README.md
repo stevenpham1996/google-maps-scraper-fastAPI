@@ -50,6 +50,12 @@ curl -X POST "http://localhost:8001/scrape" \
 ```bash
 curl "http://localhost:8001/scrape-get?query=hotels%20in%2098392&max_places=10&lang=en&headless=true"
 ```
+or
+
+```bash
+curl "http://gmaps_scraper_api_service:8001/scrape-get?query=hotels%20in%2098392&max_places=10&lang=en&headless=true"
+```
+
 
 ## Running the Service
 
@@ -72,7 +78,11 @@ uvicorn gmaps_scraper_server.main_api:app --reload
 
 The API will be available at `http://localhost:8001`
 
+or for docker:
+
+`http://gmaps_scraper_api_service:8001`
+
 ## Notes
 - For production use, consider adding authentication
-- The scraping process may take several seconds to complete
+- The scraping process may take several seconds to minutes depending on the number of results
 - Results format depends on the underlying scraper implementation
