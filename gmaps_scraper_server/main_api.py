@@ -26,12 +26,13 @@ async def run_scrape(
     query: str = Query(..., description="The search query for Google Maps (e.g., 'restaurants in New York')"),
     max_places: Optional[int] = Query(None, description="Maximum number of places to scrape. Scrapes all found if None."),
     lang: str = Query("en", description="Language code for Google Maps results (e.g., 'en', 'es')."),
-    headless: bool = Query(True, description="Run the browser in headless mode (no UI). Set to false for debugging locally.")
+    headless: bool = Query(True, description="Run the browser in headless mode (no UI). Set to false for debugging locally."),
+    extract_reviews: bool = Query(False, description="Set to true to extract all user reviews (slower).")
 ):
     """
     Triggers the Google Maps scraping process for the given query.
     """
-    logging.info(f"Received scrape request for query: '{query}', max_places: {max_places}, lang: {lang}, headless: {headless}")
+    logging.info(f"Received scrape request for query: '{query}', max_places: {max_places}, lang: {lang}, headless: {headless}, extract_reviews: {extract_reviews}")
     try:
         # Run the potentially long-running scraping task
         # Note: For production, consider running this in a background task queue (e.g., Celery)
@@ -40,7 +41,8 @@ async def run_scrape(
             query=query,
             max_places=max_places,
             lang=lang,
-            headless=headless # Pass headless option from API
+            headless=headless, # Pass headless option from API
+            extract_reviews=extract_reviews
         )
         logging.info(f"Scraping finished for query: '{query}'. Found {len(results)} results.")
         return results
@@ -57,12 +59,13 @@ async def run_scrape_get(
     query: str = Query(..., description="The search query for Google Maps (e.g., 'restaurants in New York')"),
     max_places: Optional[int] = Query(None, description="Maximum number of places to scrape. Scrapes all found if None."),
     lang: str = Query("en", description="Language code for Google Maps results (e.g., 'en', 'es')."),
-    headless: bool = Query(True, description="Run the browser in headless mode (no UI). Set to false for debugging locally.")
+    headless: bool = Query(True, description="Run the browser in headless mode (no UI). Set to false for debugging locally."),
+    extract_reviews: bool = Query(False, description="Set to true to extract all user reviews (slower).")
 ):
     """
     Triggers the Google Maps scraping process for the given query via GET request.
     """
-    logging.info(f"Received GET scrape request for query: '{query}', max_places: {max_places}, lang: {lang}, headless: {headless}")
+    logging.info(f"Received GET scrape request for query: '{query}', max_places: {max_places}, lang: {lang}, headless: {headless}, extract_reviews: {extract_reviews}")
     try:
         # Run the potentially long-running scraping task
         # Note: For production, consider running this in a background task queue (e.g., Celery)
@@ -71,7 +74,8 @@ async def run_scrape_get(
             query=query,
             max_places=max_places,
             lang=lang,
-            headless=headless # Pass headless option from API
+            headless=headless, # Pass headless option from API
+            extract_reviews=extract_reviews
         )
         logging.info(f"Scraping finished for query: '{query}'. Found {len(results)} results.")
         return results

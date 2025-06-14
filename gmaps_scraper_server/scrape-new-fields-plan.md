@@ -18,7 +18,7 @@ This is the most straightforward task. We'll add new functions to `extractor.py`
 
 **File to Modify:** `gmaps_scraper_server/extractor.py`
 
-[ ] **1.1. Create the `get_open_hours` function:**
+[x] **1.1. Create the `get_open_hours` function:**
 Based on the Go project's `getHours` function (which uses index path `[34][1]`), create a Python equivalent.
 
 *Add this function to `extractor.py`:*
@@ -41,7 +41,7 @@ def get_open_hours(data):
     return open_hours if open_hours else None
 ```
 
-[ ] **1.2. Create the `get_images` function:**
+[x] **1.2. Create the `get_images` function:**
 The Go project extracts images from path `[171][0]`. Each image item then has a title and a URL at specific sub-indices.
 
 *Add this function to `extractor.py`:*
@@ -64,7 +64,7 @@ def get_images(data):
     return images if images else None
 ```
 
-[ ] **1.3. Update `extract_place_data` to include the new fields:**
+[x] **1.3. Update `extract_place_data` to include the new fields:**
 Integrate the new functions into the main orchestration function.
 
 *Modify the `place_details` dictionary inside the `extract_place_data` function:*
@@ -113,7 +113,7 @@ This is the most significant change. We will add logic to fetch all reviews via 
 
 **Files to Modify:** `gmaps_scraper_server/scraper.py`, `gmaps_scraper_server/extractor.py`, `gmaps_scraper_server/main_api.py`.
 
-[ ] **2.1. Add a new API parameter to enable/disable review scraping:**
+[x] **2.1. Add a new API parameter to enable/disable review scraping:**
 This is an intensive operation, so it should be optional.
 
 *In `gmaps_scraper_server/main_api.py`, add `extract_reviews` to both `run_scrape` and `run_scrape_get` endpoints:*
@@ -143,7 +143,7 @@ async def run_scrape_get(
     # ...
 ```
 
-[ ] **2.2. Create the review parsing logic in `extractor.py`:**
+[x] **2.2. Create the review parsing logic in `extractor.py`:**
 This function will parse the raw review data we get from the RPC calls. The Go project provides the exact index paths.
 
 *Add this new function to `gmaps_scraper_server/extractor.py`:*
@@ -180,7 +180,7 @@ def parse_user_reviews(reviews_data):
 ```
 > **Note:** The Go project gets initial reviews from `darray[175][9][0][0]` and extended reviews from the RPC call. The structure of the RPC response is slightly different. The `safe_get(data_blob, 52)` path I added in step 1.3 is a common location for the initial ~8 reviews. The `parse_user_reviews` function above is tailored for the RPC response (`listugcposts`), which is the superior method we're implementing.
 
-[ ] **2.3. Implement the RPC fetching logic in `scraper.py`:**
+[x] **2.3. Implement the RPC fetching logic in `scraper.py`:**
 This is the core of the review extraction. We will create a new async helper function to manage the RPC calls.
 
 *First, add necessary imports at the top of `gmaps_scraper_server/scraper.py`:*
@@ -253,7 +253,7 @@ async def fetch_all_reviews(page, place_link):
     return all_reviews
 ```
 
-[ ] **2.4. Integrate the review fetching into the main `scrape_google_maps` function:**
+[x] **2.4. Integrate the review fetching into the main `scrape_google_maps` function:**
 
 *Modify `gmaps_scraper_server/scraper.py` and `gmaps_scraper_server/main_api.py` to pass the `extract_reviews` parameter:*
 

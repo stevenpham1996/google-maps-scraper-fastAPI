@@ -244,10 +244,74 @@ def get_thumbnail(data):
     # Tentative guess based on debug_inner_data structure (might be in a sublist like [14][0][0][6][0]?)
     return safe_get(data, 14, 0, 0, 6, 0) # Tentative guess
 
+def get_open_hours(data):
+    """Extracts the opening hours for each day."""
+    # Path based on Go project: darray[34][1]
+    hours_list = safe_get(data, 34, 1)
+    if not isinstance(hours_list, list):
+        return None
+    
+    open_hours = {}
+    for item in hours_list:
+        if isinstance(item, list) and len(item) >= 2:
+            day = safe_get(item, 0)
+            times = safe_get(item, 1)
+            if day and isinstance(times, list):
+                open_hours[day] = times
+    
+    return open_hours if open_hours else None
+
+def get_images(data):
+    """Extracts a list of images with their titles."""
+    # Path based on Go project: darray[171][0]
+    images_list = safe_get(data, 171, 0)
+    if not isinstance(images_list, list):
+        return None
+        
+    images = []
+    for item in images_list:
+        # Go project logic: getLinkSource with source:[2] and link:[3,0,6,0]
+        title = safe_get(item, 2)
+        url = safe_get(item, 3, 0, 6, 0)
+        if title and url:
+            images.append({"title": title, "image": url})
+            
+    return images if images else None
+
+def parse_user_reviews(reviews_data):
+    """Parses a list of raw review data from the RPC response."""
+    if not isinstance(reviews_data, list):
+        return None
+
+    parsed_reviews = []
+    for review in reviews_data:
+        # Paths based on Go project's parseReviews function
+        author_name = safe_get(review, 0, 1)
+        profile_picture_url = safe_get(review, 0, 2)
+        review_text = safe_get(review, 3)
+        rating = safe_get(review, 4)
+        relative_time = safe_get(review, 1) # e.g., "a week ago"
+        
+        # The Go project extracts more, but this is a solid start.
+        # You can expand this by inspecting the `review` object.
+        # For example, to get review photos:
+        photos = [safe_get(photo, 6, 0) for photo in safe_get(review, 14) or [] if safe_get(photo, 6, 0)]
+
+        if author_name and rating is not None:
+            parsed_reviews.append({
+                "name": author_name,
+                "profile_picture": profile_picture_url,
+                "rating": rating,
+                "description": review_text,
+                "when": relative_time,
+                "images": photos
+            })
+    return parsed_reviews if parsed_reviews else None
+
 # Add more extraction functions here as needed, using the indices
 # from omkarcloud/src/extract_data.py as a reference, BUT VERIFYING against debug_inner_data.json
 
-def extract_place_data(html_content):
+def extract_place_data(html_content, all_reviews=None):
     """
     High-level function to orchestrate extraction from HTML content.
     """
@@ -271,9 +335,11 @@ def extract_place_data(html_content):
         "reviews_count": get_reviews_count(data_blob),
         "categories": get_categories(data_blob),
         "website": get_website(data_blob),
-        "phone": get_phone_number(data_blob), # Needs index verification
-        "thumbnail": get_thumbnail(data_blob), # Needs index verification
-        # Add other fields as needed
+        "phone": get_phone_number(data_blob),
+        "thumbnail": get_thumbnail(data_blob),
+        "open_hours": get_open_hours(data_blob),
+        "images": get_images(data_blob),
+        "user_reviews": parse_user_reviews(all_reviews if all_reviews else safe_get(data_blob, 52)),
     }
 
     # Filter out None values if desired

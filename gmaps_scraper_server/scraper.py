@@ -1,6 +1,9 @@
 import json
 import asyncio # Changed from time
 import re
+import random
+import string
+from urllib.parse import quote
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError # Changed to async
 from urllib.parse import urlencode
 
@@ -21,8 +24,68 @@ def create_search_url(query, lang="en", geo_coordinates=None, zoom=None):
     # For simplicity, starting with basic query search
     return BASE_URL + "?" + urlencode(params)
 
+async def fetch_all_reviews(page, place_link):
+    """
+    Fetches all user reviews by simulating the internal RPC call.
+    This is more robust and efficient than UI scrolling.
+    """
+    # Regex to find the place ID from the URL (e.g., !1s<ID>)
+    place_id_match = re.search(r'!1s([^!]+)', place_link)
+    if not place_id_match:
+        print("Could not extract place ID for reviews RPC.")
+        return []
+
+    place_id = place_id_match.group(1)
+    
+    # This is the base for the RPC call
+    rpc_base_url = "https://www.google.com/maps/preview/reviews"
+
+    all_reviews = []
+    next_page_token = '0' # Start with 0
+    page_num = 0
+    max_pages = 10 # Safety break to avoid infinite loops
+
+    while next_page_token and page_num < max_pages:
+        # Construct the RPC URL. The parameters are specific and mimic the browser's request.
+        # Go project has a more complex pb param, but this simpler preview/reviews often works.
+        # If this fails, the pb param from the Go project needs to be constructed.
+        params = {
+            'authuser': '0',
+            'hl': 'en',
+            'gl': 'us',
+            'pb': f'!1s{place_id}!2i{next_page_token}!3i10!4i0!5m2!1s{page_num+1}!2i10!6i1', # Simplified pb
+        }
+        
+        try:
+            response = await page.request.get(rpc_base_url, params=params)
+            if response.status != 200:
+                print(f"Error fetching reviews page {page_num+1}: Status {response.status}")
+                break
+
+            content = await response.body()
+            # The response is prefixed with a security token `)]}'` which must be removed.
+            json_str = content.decode('utf-8').lstrip(")]}'")
+            data = json.loads(json_str)
+
+            # The reviews are typically in the second element of the main list
+            reviews_list = extractor.safe_get(data, 2)
+            if isinstance(reviews_list, list):
+                all_reviews.extend(reviews_list)
+                print(f"Fetched {len(reviews_list)} reviews. Total: {len(all_reviews)}")
+
+            # The next page token is the second element of the first element
+            next_page_token = extractor.safe_get(data, 1, 1)
+            page_num += 1
+            await asyncio.sleep(random.uniform(0.5, 1.5)) # Be a good citizen
+
+        except Exception as e:
+            print(f"An exception occurred while fetching reviews: {e}")
+            break
+            
+    return all_reviews
+
 # --- Main Scraping Logic ---
-async def scrape_google_maps(query, max_places=None, lang="en", headless=True): # Added async
+async def scrape_google_maps(query, max_places=None, lang="en", headless=True, extract_reviews=False): # Added async
     """
     Scrapes Google Maps for places based on a query.
 
@@ -31,6 +94,7 @@ async def scrape_google_maps(query, max_places=None, lang="en", headless=True): 
         max_places (int, optional): Maximum number of places to scrape. Defaults to None (scrape all found).
         lang (str, optional): Language code for Google Maps (e.g., 'en', 'es'). Defaults to "en".
         headless (bool, optional): Whether to run the browser in headless mode. Defaults to True.
+        extract_reviews (bool, optional): Whether to extract all user reviews. Defaults to False.
 
     Returns:
         list: A list of dictionaries, each containing details for a scraped place.
@@ -155,11 +219,14 @@ async def scrape_google_maps(query, max_places=None, lang="en", headless=True): 
                 print(f"Processing link {count}/{len(place_links)}: {link}") # Keep sync print
                 try:
                     await page.goto(link, wait_until='domcontentloaded') # Added await
-                    # Wait a bit for dynamic content if needed, or wait for a specific element
-                    # await page.wait_for_load_state('networkidle', timeout=10000) # Or networkidle if needed
+                    
+                    all_reviews = None
+                    if extract_reviews:
+                        print("  - Extracting all user reviews...")
+                        all_reviews = await fetch_all_reviews(page, link)
 
                     html_content = await page.content() # Added await
-                    place_data = extractor.extract_place_data(html_content)
+                    place_data = extractor.extract_place_data(html_content, all_reviews)
 
                     if place_data:
                         place_data['link'] = link # Add the source link
