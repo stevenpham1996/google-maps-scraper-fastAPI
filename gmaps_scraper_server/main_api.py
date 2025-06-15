@@ -27,7 +27,7 @@ async def run_scrape(
     max_places: Optional[int] = Query(None, description="Maximum number of places to scrape. Scrapes all found if None."),
     lang: str = Query("en", description="Language code for Google Maps results (e.g., 'en', 'es')."),
     headless: bool = Query(True, description="Run the browser in headless mode (no UI). Set to false for debugging locally."),
-    extract_reviews: bool = Query(False, description="Set to true to extract all user reviews (slower).")
+    extract_reviews: bool = Query(True, description="Set to true to extract all user reviews (slower).")
 ):
     """
     Triggers the Google Maps scraping process for the given query.
@@ -60,7 +60,7 @@ async def run_scrape_get(
     max_places: Optional[int] = Query(None, description="Maximum number of places to scrape. Scrapes all found if None."),
     lang: str = Query("en", description="Language code for Google Maps results (e.g., 'en', 'es')."),
     headless: bool = Query(True, description="Run the browser in headless mode (no UI). Set to false for debugging locally."),
-    extract_reviews: bool = Query(False, description="Set to true to extract all user reviews (slower).")
+    extract_reviews: bool = Query(True, description="Set to true to extract all user reviews (slower).")
 ):
     """
     Triggers the Google Maps scraping process for the given query via GET request.
