@@ -4,6 +4,8 @@ import re
 import random
 import string
 from urllib.parse import quote
+import os
+import base64
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError # Changed to async
 from urllib.parse import urlencode
 
@@ -24,12 +26,18 @@ def create_search_url(query, lang="en", geo_coordinates=None, zoom=None):
     # For simplicity, starting with basic query search
     return BASE_URL + "?" + urlencode(params)
 
+def generate_random_id(length):
+    """Generates a URL-safe random ID, mimicking the Go implementation."""
+    num_bytes = (length * 6 + 7) // 8
+    random_bytes = os.urandom(num_bytes)
+    encoded = base64.urlsafe_b64encode(random_bytes).decode('utf-8')
+    return encoded.replace('=', '')[:length]
+
 async def fetch_all_reviews(page, place_link):
     """
-    Fetches all user reviews by simulating the internal RPC call.
+    Fetches all user reviews by simulating the internal 'listugcposts' RPC call.
     This is more robust and efficient than UI scrolling.
     """
-    # Regex to find the place ID from the URL (e.g., !1s<ID>)
     place_id_match = re.search(r'!1s([^!]+)', place_link)
     if not place_id_match:
         print("Could not extract place ID for reviews RPC.")
@@ -37,52 +45,60 @@ async def fetch_all_reviews(page, place_link):
 
     place_id = place_id_match.group(1)
     
-    # This is the base for the RPC call
-    rpc_base_url = "https://www.google.com/maps/preview/reviews"
+    # Use the correct RPC endpoint
+    rpc_base_url = "https://www.google.com/maps/rpc/listugcposts"
 
-    all_reviews = []
-    next_page_token = '0' # Start with 0
+    all_reviews_data = []
+    # The token for the first page is '0', subsequent tokens are strings
+    next_page_token = '0' 
     page_num = 0
-    max_pages = 10 # Safety break to avoid infinite loops
+    # Increase safety break, as some places have many reviews
+    max_pages = 20 
 
-    while next_page_token and page_num < max_pages:
-        # Construct the RPC URL. The parameters are specific and mimic the browser's request.
-        # Go project has a more complex pb param, but this simpler preview/reviews often works.
-        # If this fails, the pb param from the Go project needs to be constructed.
-        params = {
-            'authuser': '0',
-            'hl': 'en',
-            'gl': 'us',
-            'pb': f'!1s{place_id}!2i{next_page_token}!3i10!4i0!5m2!1s{page_num+1}!2i10!6i1', # Simplified pb
-        }
+    while next_page_token is not None and page_num < max_pages:
+        request_id = generate_random_id(21)
+        
+        # Construct the 'pb' parameter to match the Go project's structure
+        pb_components = [
+            f"!1m6!1s{quote(place_id)}",
+            "!6m4!4m1!1e1!4m1!1e3",
+            f"!2m2!1i20!2s{quote(next_page_token)}", # Page size 20
+            f"!5m2!1s{request_id}!7e81",
+            "!8m9!2b1!3b1!5b1!7b1!12m4!1b1!2b1!4m1!1e1!11m0!13m1!1e1",
+        ]
+        pb_param = "".join(pb_components)
+        
+        # --- CORRECTED URL CONSTRUCTION ---
+        # Manually construct the URL to prevent `!` from being URL-encoded.
+        full_url = f"{rpc_base_url}?authuser=0&hl=en&pb={pb_param}"
         
         try:
-            response = await page.request.get(rpc_base_url, params=params)
+            # Pass the raw URL string directly to the get method
+            response = await page.request.get(full_url)
             if response.status != 200:
                 print(f"Error fetching reviews page {page_num+1}: Status {response.status}")
                 break
 
             content = await response.body()
-            # The response is prefixed with a security token `)]}'` which must be removed.
             json_str = content.decode('utf-8').lstrip(")]}'")
             data = json.loads(json_str)
 
-            # The reviews are typically in the second element of the main list
+            # Reviews are in the list at index 2
             reviews_list = extractor.safe_get(data, 2)
             if isinstance(reviews_list, list):
-                all_reviews.extend(reviews_list)
-                print(f"Fetched {len(reviews_list)} reviews. Total: {len(all_reviews)}")
+                all_reviews_data.extend(reviews_list)
+                print(f"Fetched {len(reviews_list)} reviews. Total: {len(all_reviews_data)}")
 
-            # The next page token is the second element of the first element
-            next_page_token = extractor.safe_get(data, 1, 1)
+            # CORRECTED: Next page token is the string at index 1
+            next_page_token = extractor.safe_get(data, 1)
             page_num += 1
-            await asyncio.sleep(random.uniform(0.5, 1.5)) # Be a good citizen
+            await asyncio.sleep(random.uniform(0.8, 1.8)) # Be a good citizen
 
         except Exception as e:
             print(f"An exception occurred while fetching reviews: {e}")
             break
             
-    return all_reviews
+    return all_reviews_data
 
 # --- Main Scraping Logic ---
 async def scrape_google_maps(query, max_places=None, lang="en", headless=True, extract_reviews=False): # Added async

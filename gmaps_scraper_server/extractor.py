@@ -51,95 +51,48 @@ def extract_initial_json(html_content):
 
 def parse_json_data(json_str):
     """
-    Parses the extracted JSON string, handling the nested JSON string if present.
-    Returns the main data blob (list) or None if parsing fails or structure is unexpected.
+    Parses the initial JSON, finds the dynamic key, and extracts the main data blob.
+    This mimics the logic from the Go project's JS extractor.
     """
     if not json_str:
         return None
     try:
         initial_data = json.loads(json_str)
 
-        # Check the initial heuristic path [3][6]
-        if isinstance(initial_data, list) and len(initial_data) > 3 and isinstance(initial_data[3], list) and len(initial_data[3]) > 6:
-             data_blob_or_str = initial_data[3][6]
-
-             # Case 1: It's already the list we expect (older format?)
-             if isinstance(data_blob_or_str, list):
-                 print("Found expected list structure directly at initial_data[3][6].")
-                 return data_blob_or_str
-
-             # Case 2: It's the string containing the actual JSON
-             elif isinstance(data_blob_or_str, str) and data_blob_or_str.startswith(")]}'\n"):
-                 print("Found string at initial_data[3][6], attempting to parse inner JSON.")
-                 try:
-                     json_str_inner = data_blob_or_str.split(")]}'\n", 1)[1]
+        # The core data is nested under a dynamic key within initial_data[3].
+        # The Go project iterates from 'A' (65) to 'Z' (90) to find a key like "Af", "Bf", etc.
+        app_state = safe_get(initial_data, 3)
+        if not isinstance(app_state, dict):
+            # Fallback for different structures, check if it's a list
+            if isinstance(app_state, list) and len(app_state) > 6:
+                 # This handles the older structure my previous plan assumed.
+                 # It's good to keep as a fallback.
+                 data_blob_str = safe_get(app_state, 6)
+                 if isinstance(data_blob_str, str) and data_blob_str.startswith(")]}'"):
+                     json_str_inner = data_blob_str.split(")]}'\n", 1)[1]
                      actual_data = json.loads(json_str_inner)
+                     return safe_get(actual_data, 6)
+            return None
 
-                     # Check if the parsed inner data is a list and has the expected sub-structure at index 6
-                     if isinstance(actual_data, list) and len(actual_data) > 6:
-                          potential_data_blob = safe_get(actual_data, 6)
-                          if isinstance(potential_data_blob, list):
-                              print("Returning data blob found at actual_data[6].")
-                              return potential_data_blob # This is the main data structure
-                          else:
-                              print(f"Data at actual_data[6] is not a list, but {type(potential_data_blob)}. Saving inner data for inspection.")
-                              # Save actual_data for debugging
-                              try:
-                                  with open("debug_inner_data.json", "w", encoding="utf-8") as f_inner:
-                                      json.dump(actual_data, f_inner, indent=2)
-                                  print("...Successfully saved debug_inner_data.json")
-                              except Exception as dump_error_inner:
-                                  print(f"Error saving inner debug file: {dump_error_inner}")
-                              return None # Structure mismatch within inner data
-                     else:
-                         print(f"Parsed inner JSON is not a list or too short (len <= 6), type: {type(actual_data)}. Saving inner data for inspection.")
-                         # Save actual_data for debugging
-                         try:
-                             with open("debug_inner_data.json", "w", encoding="utf-8") as f_inner:
-                                 json.dump(actual_data, f_inner, indent=2)
-                             print("...Successfully saved debug_inner_data.json")
-                         except Exception as dump_error_inner:
-                             print(f"Error saving inner debug file: {dump_error_inner}")
-                         return None # Inner JSON structure not as expected
-
-                 except json.JSONDecodeError as e_inner:
-                     print(f"Error decoding inner JSON string: {e_inner}")
-                     return None
-                 except Exception as e_inner_general:
-                     print(f"Unexpected error processing inner JSON string: {e_inner_general}")
-                     return None
-
-             # Case 3: Data at [3][6] is neither a list nor the expected string
-             else:
-                 print(f"Parsed JSON structure unexpected at [3][6]. Expected list or prefixed JSON string, got {type(data_blob_or_str)}.")
-                 # Save initial_data for debugging
-                 print("Attempting to save full structure to debug_initial_data.json...")
-                 try:
-                     with open("debug_initial_data.json", "w", encoding="utf-8") as f:
-                         json.dump(initial_data, f, indent=2)
-                     print("...Successfully saved debug_initial_data.json")
-                 except Exception as dump_error:
-                     print(f"Error saving debug file: {dump_error}")
-                 return None # Unexpected structure at [3][6]
-
-        # Case 4: Initial path [3][6] itself wasn't valid
-        else:
-            print(f"Initial JSON structure not as expected (list[3][6] path not valid). Type: {type(initial_data)}")
-            # Save initial_data for debugging
-            print("Attempting to save unexpected structure to debug_initial_data.json...")
-            try:
-                with open("debug_initial_data.json", "w", encoding="utf-8") as f:
-                    json.dump(initial_data, f, indent=2)
-                print("...Successfully saved debug_initial_data.json")
-            except Exception as dump_error:
-                print(f"Error saving debug file: {dump_error}")
-            return None # Initial structure invalid
-
-    except json.JSONDecodeError as e:
-        print(f"Error decoding initial JSON: {e}")
+        # --- CORRECT DYNAMIC KEY LOGIC ---
+        for i in range(65, 91):  # ASCII for 'A' through 'Z'
+            key = chr(i) + "f"
+            if key in app_state:
+                data_blob_str = safe_get(app_state, key, 6)
+                if isinstance(data_blob_str, str) and data_blob_str.startswith(")]}'"):
+                    print(f"Found data blob under dynamic key: '{key}'")
+                    json_str_inner = data_blob_str.split(")]}'\n", 1)[1]
+                    actual_data = json.loads(json_str_inner)
+                    # The final data blob is at index 6 of this inner JSON
+                    final_blob = safe_get(actual_data, 6)
+                    if isinstance(final_blob, list):
+                        return final_blob
+        
+        print("Could not find the data blob using dynamic key search.")
         return None
-    except Exception as e:
-        print(f"Unexpected error parsing JSON data: {e}")
+
+    except (json.JSONDecodeError, IndexError, TypeError) as e:
+        print(f"Error parsing JSON data: {e}")
         return None
 
 
@@ -279,33 +232,63 @@ def get_images(data):
     return images if images else None
 
 def parse_user_reviews(reviews_data):
-    """Parses a list of raw review data from the RPC response."""
+    """
+    Parses a list of raw review data from the 'listugcposts' RPC response.
+    The index paths are based on the working Go implementation.
+    """
     if not isinstance(reviews_data, list):
         return None
 
     parsed_reviews = []
-    for review in reviews_data:
-        # Paths based on Go project's parseReviews function
-        author_name = safe_get(review, 0, 1)
-        profile_picture_url = safe_get(review, 0, 2)
-        review_text = safe_get(review, 3)
-        rating = safe_get(review, 4)
-        relative_time = safe_get(review, 1) # e.g., "a week ago"
-        
-        # The Go project extracts more, but this is a solid start.
-        # You can expand this by inspecting the `review` object.
-        # For example, to get review photos:
-        photos = [safe_get(photo, 6, 0) for photo in safe_get(review, 14) or [] if safe_get(photo, 6, 0)]
+    for review_item in reviews_data:
+        # The main review content is nested inside the first element
+        review = safe_get(review_item, 0)
+        if not review:
+            continue
 
-        if author_name and rating is not None:
-            parsed_reviews.append({
-                "name": author_name,
-                "profile_picture": profile_picture_url,
-                "rating": rating,
-                "description": review_text,
-                "when": relative_time,
-                "images": photos
-            })
+        author_name = safe_get(review, 1, 4, 5, 0)
+        
+        if not author_name:
+            continue # Skip if essential info is missing
+
+        # Decode the URL-encoded profile picture
+        pic_url_raw = safe_get(review, 1, 4, 5, 1)
+        profile_picture = ""
+        if pic_url_raw:
+            try:
+                # Basic decoding, can be enhanced if needed
+                profile_picture = bytes(pic_url_raw, "utf-8").decode("unicode_escape")
+            except:
+                profile_picture = pic_url_raw
+
+
+        description = safe_get(review, 2, 15, 0, 0)
+        rating = safe_get(review, 2, 0, 0)
+        
+        # Date extraction is complex, using relative time is a good start
+        # The Go code formats a date from multiple fields: [2, 2, 0, 1, 21, 6, 8]
+        # For simplicity, we can use a placeholder or extract what's available
+        when = "N/A" # Placeholder
+
+        # Extract review images
+        images = []
+        images_list = safe_get(review, 2, 2, 0, 1, 21, 7)
+        if isinstance(images_list, list):
+            for img_item in images_list:
+                img_url = safe_get(img_item)
+                if img_url and isinstance(img_url, str):
+                    # URLs often start with '//', prepend https:
+                    images.append("https:" + img_url if img_url.startswith('//') else img_url)
+
+        parsed_reviews.append({
+            "name": author_name,
+            "profile_picture": profile_picture,
+            "rating": rating,
+            "description": description,
+            "when": when, # To be improved if exact date is needed
+            "images": images
+        })
+
     return parsed_reviews if parsed_reviews else None
 
 # Add more extraction functions here as needed, using the indices
@@ -325,7 +308,7 @@ def extract_place_data(html_content, all_reviews=None):
         print("Failed to parse JSON data or find expected structure.")
         return None
 
-    # Now extract individual fields using the helper functions
+    # This dictionary now uses the corrected functions and logic
     place_details = {
         "name": get_main_name(data_blob),
         "place_id": get_place_id(data_blob),
@@ -337,9 +320,14 @@ def extract_place_data(html_content, all_reviews=None):
         "website": get_website(data_blob),
         "phone": get_phone_number(data_blob),
         "thumbnail": get_thumbnail(data_blob),
+        
+        # --- Fields to be fixed/confirmed ---
         "open_hours": get_open_hours(data_blob),
         "images": get_images(data_blob),
-        "user_reviews": parse_user_reviews(all_reviews if all_reviews else safe_get(data_blob, 52)),
+        
+        # --- Corrected User Reviews Logic ---
+        # Only parse reviews if they have been explicitly fetched via RPC
+        "user_reviews": parse_user_reviews(all_reviews) if all_reviews else [],
     }
 
     # Filter out None values if desired
