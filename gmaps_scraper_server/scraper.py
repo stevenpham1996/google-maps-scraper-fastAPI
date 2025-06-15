@@ -45,17 +45,20 @@ async def fetch_all_reviews(page, place_link):
 
     place_id = place_id_match.group(1)
     
-    # Use the correct RPC endpoint
     rpc_base_url = "https://www.google.com/maps/rpc/listugcposts"
 
     all_reviews_data = []
-    # The token for the first page is '0', subsequent tokens are strings
-    next_page_token = '0' 
+    
+    # --- CHANGE 1: Start with an empty page token, not '0'. ---
+    # This correctly signals to the API to start from the beginning.
+    next_page_token = ""
+    
     page_num = 0
-    # Increase safety break, as some places have many reviews
-    max_pages = 20 
+    max_pages = 20 # Safety break to avoid infinite loops
 
-    while next_page_token is not None and page_num < max_pages:
+    # It will correctly stop when the token is an empty string ("") or None.
+    # The initial empty string will be handled by the first iteration.
+    while True:
         request_id = generate_random_id(21)
         
         # Construct the 'pb' parameter to match the Go project's structure
@@ -68,12 +71,10 @@ async def fetch_all_reviews(page, place_link):
         ]
         pb_param = "".join(pb_components)
         
-        # --- CORRECTED URL CONSTRUCTION ---
-        # Manually construct the URL to prevent `!` from being URL-encoded.
+        # Manually construct the URL to prevent '!' from being URL-encoded.
         full_url = f"{rpc_base_url}?authuser=0&hl=en&pb={pb_param}"
         
         try:
-            # Pass the raw URL string directly to the get method
             response = await page.request.get(full_url)
             if response.status != 200:
                 print(f"Error fetching reviews page {page_num+1}: Status {response.status}")
@@ -89,10 +90,16 @@ async def fetch_all_reviews(page, place_link):
                 all_reviews_data.extend(reviews_list)
                 print(f"Fetched {len(reviews_list)} reviews. Total: {len(all_reviews_data)}")
 
-            # CORRECTED: Next page token is the string at index 1
+            # The next page token is the string at index 1.
+            # If it's missing or an empty string, the loop will terminate.
             next_page_token = extractor.safe_get(data, 1)
+            
+            # explicit exit condition for loop ---
+            if not next_page_token or page_num >= max_pages:
+                break
+                
             page_num += 1
-            await asyncio.sleep(random.uniform(0.8, 1.8)) # Be a good citizen
+            await asyncio.sleep(random.uniform(0.8, 1.8))
 
         except Exception as e:
             print(f"An exception occurred while fetching reviews: {e}")

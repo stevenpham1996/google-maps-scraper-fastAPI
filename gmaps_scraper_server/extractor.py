@@ -307,7 +307,11 @@ def extract_place_data(html_content, all_reviews=None):
     if not data_blob:
         print("Failed to parse JSON data or find expected structure.")
         return None
-
+    
+    # DEBUG - save the data_blob to a file
+    with open('data_blob.json', 'w') as f:
+        json.dump(data_blob, f, indent=2)
+    
     # This dictionary now uses the corrected functions and logic
     place_details = {
         "name": get_main_name(data_blob),
@@ -325,15 +329,15 @@ def extract_place_data(html_content, all_reviews=None):
         "open_hours": get_open_hours(data_blob),
         "images": get_images(data_blob),
         
-        # --- Corrected User Reviews Logic ---
-        # Only parse reviews if they have been explicitly fetched via RPC
+        # This logic correctly handles the case where reviews are not fetched
+        # or when the fetched list is empty.
         "user_reviews": parse_user_reviews(all_reviews) if all_reviews else [],
     }
 
-    # Filter out None values if desired
-    place_details = {k: v for k, v in place_details.items() if v is not None}
-
-    return place_details if place_details else None
+    # Filter out keys where the value is None to keep the output clean.
+    # This is why 'open_hours' disappears when not found.
+    # 'user_reviews' will remain as an empty list if no reviews are found.
+    return {k: v for k, v in place_details.items() if v is not None}
 
 # Example usage (for testing):
 if __name__ == '__main__':
