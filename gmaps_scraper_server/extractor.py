@@ -265,10 +265,20 @@ def parse_user_reviews(reviews_data):
         description = safe_get(review, 2, 15, 0, 0)
         rating = safe_get(review, 2, 0, 0)
         
-        # Date extraction is complex, using relative time is a good start
-        # The Go code formats a date from multiple fields: [2, 2, 0, 1, 21, 6, 8]
-        # For simplicity, we can use a placeholder or extract what's available
-        when = "N/A" # Placeholder
+        # --- Datetime Extraction ---
+        # This logic is based on the Go project's successful extraction path.
+        # It retrieves a list like [year, month, day, ...] and formats it.
+        date_parts = safe_get(review, 2, 2, 0, 1, 21, 6, 8)
+        when = "N/A"  # Default value
+        if isinstance(date_parts, list) and len(date_parts) >= 3:
+            try:
+                # Ensure parts are integers before formatting for safety
+                year, month, day = int(date_parts[0]), int(date_parts[1]), int(date_parts[2])
+                # Format to YYYY-MM-DD, zero-padding month and day for ISO 8601 standard.
+                when = f"{year}-{month:02d}-{day:02d}"
+            except (ValueError, TypeError):
+                # If parts are not valid integers, fallback to the default "N/A"
+                pass
 
         # Extract review images
         images = []
@@ -285,7 +295,7 @@ def parse_user_reviews(reviews_data):
             "profile_picture": profile_picture,
             "rating": rating,
             "description": description,
-            "when": when, # To be improved if exact date is needed
+            "when": when, 
             "images": images
         })
 
