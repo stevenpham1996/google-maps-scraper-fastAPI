@@ -1,5 +1,18 @@
+# gmaps_scraper_server/extractor.py
+
 import json
 import re
+import random # <--- ADDED: For random selection of reviews
+
+# --- CONSTANTS FOR REVIEW SELECTION ---
+# The number of reviews to be randomly selected and stored.
+REVIEW_SELECTION_COUNT = 20
+# A larger pool of top-ranked reviews from which to randomly select.
+# This introduces randomness while still favoring high-quality reviews.
+REVIEW_CANDIDATE_POOL_SIZE = 75
+# A set of placeholder usernames for efficient lookup.
+PLACEHOLDER_USERNAMES = {"google user", "anonymous user", "unknown", "profile name"}
+
 
 def safe_get(data, *keys):
     """
@@ -13,19 +26,15 @@ def safe_get(data, *keys):
                 if isinstance(key, int) and 0 <= key < len(current):
                     current = current[key]
                 else:
-                    # print(f"Index {key} out of bounds or invalid for list.")
                     return None
             elif isinstance(current, dict):
                 if key in current:
                     current = current[key]
                 else:
-                    # print(f"Key {key} not found in dict.")
                     return None
             else:
-                # print(f"Cannot access key {key} on non-dict/list item: {type(current)}")
                 return None
         except (IndexError, TypeError, KeyError) as e:
-            # print(f"Error accessing key {key}: {e}")
             return None
     return current
 
@@ -59,14 +68,9 @@ def parse_json_data(json_str):
     try:
         initial_data = json.loads(json_str)
 
-        # The core data is nested under a dynamic key within initial_data[3].
-        # The Go project iterates from 'A' (65) to 'Z' (90) to find a key like "Af", "Bf", etc.
         app_state = safe_get(initial_data, 3)
         if not isinstance(app_state, dict):
-            # Fallback for different structures, check if it's a list
             if isinstance(app_state, list) and len(app_state) > 6:
-                 # This handles the older structure my previous plan assumed.
-                 # It's good to keep as a fallback.
                  data_blob_str = safe_get(app_state, 6)
                  if isinstance(data_blob_str, str) and data_blob_str.startswith(")]}'"):
                      json_str_inner = data_blob_str.split(")]}'\n", 1)[1]
@@ -74,7 +78,6 @@ def parse_json_data(json_str):
                      return safe_get(actual_data, 6)
             return None
 
-        # --- CORRECT DYNAMIC KEY LOGIC ---
         for i in range(65, 91):  # ASCII for 'A' through 'Z'
             key = chr(i) + "f"
             if key in app_state:
@@ -83,7 +86,6 @@ def parse_json_data(json_str):
                     print(f"Found data blob under dynamic key: '{key}'")
                     json_str_inner = data_blob_str.split(")]}'\n", 1)[1]
                     actual_data = json.loads(json_str_inner)
-                    # The final data blob is at index 6 of this inner JSON
                     final_blob = safe_get(actual_data, 6)
                     if isinstance(final_blob, list):
                         return final_blob
@@ -96,20 +98,14 @@ def parse_json_data(json_str):
         return None
 
 
-# --- Field Extraction Functions (Indices relative to the data_blob returned by parse_json_data) ---
-
+# --- Field Extraction Functions ---
 def get_main_name(data):
-    """Extracts the main name of the place."""
-    # Index relative to the data_blob returned by parse_json_data
-    # Confirmed via debug_inner_data.json: data_blob = actual_data[6], name = data_blob[11]
     return safe_get(data, 11)
 
 def get_place_id(data):
-    """Extracts the Google Place ID."""
-    return safe_get(data, 10) # Updated index
+    return safe_get(data, 10)
 
 def get_gps_coordinates(data):
-    """Extracts latitude and longitude."""
     lat = safe_get(data, 9, 2)
     lon = safe_get(data, 9, 3)
     if lat is not None and lon is not None:
@@ -117,93 +113,55 @@ def get_gps_coordinates(data):
     return None
 
 def get_complete_address(data):
-    """Extracts structured address components and joins them."""
-    address_parts = safe_get(data, 2) # Updated index
+    address_parts = safe_get(data, 2)
     if isinstance(address_parts, list):
         formatted = ", ".join(filter(None, address_parts))
         return formatted if formatted else None
     return None
 
 def get_rating(data):
-    """Extracts the average star rating."""
     return safe_get(data, 4, 7)
 
 def get_reviews_count(data):
-    """Extracts the total number of reviews."""
     return safe_get(data, 4, 8)
 
 def get_website(data):
-    """Extracts the primary website link."""
-    # Index based on debug_inner_data.json structure relative to data_blob (actual_data[6])
     return safe_get(data, 7, 0)
 
 def _find_phone_recursively(data_structure):
-    """
-    Recursively searches a nested list/dict structure for a list containing
-    the phone icon URL followed by the phone number string.
-    """
     if isinstance(data_structure, list):
-        # Check if this list matches the pattern [icon_url, phone_string, ...]
         if len(data_structure) >= 2 and \
            isinstance(data_structure[0], str) and "call_googblue" in data_structure[0] and \
            isinstance(data_structure[1], str):
-            # Found the pattern, assume data_structure[1] is the phone number
             phone_number_str = data_structure[1]
             standardized_number = re.sub(r'\D', '', phone_number_str)
             if standardized_number:
-                # print(f"Debug: Found phone via recursive search: {standardized_number}")
                 return standardized_number
-
-        # If not the target list, recurse into list elements
         for item in data_structure:
             found_phone = _find_phone_recursively(item)
             if found_phone:
                 return found_phone
-
     elif isinstance(data_structure, dict):
-        # Recurse into dictionary values
         for key, value in data_structure.items():
             found_phone = _find_phone_recursively(value)
             if found_phone:
                 return found_phone
-
-    # Base case: not a list/dict or pattern not found in this branch
     return None
 
 def get_phone_number(data_blob):
-    """
-    Extracts and standardizes the primary phone number by recursively searching
-    the data_blob for the phone icon pattern.
-    """
-    # data_blob is the main list structure (e.g., actual_data[6])
     found_phone = _find_phone_recursively(data_blob)
-    if found_phone:
-        return found_phone
-    else:
-        # print("Debug: Phone number pattern not found in data_blob.")
-        return None
+    return found_phone if found_phone else None
 
 def get_categories(data):
-    """Extracts the list of categories/types."""
     return safe_get(data, 13)
 
 def get_thumbnail(data):
-    """Extracts the main thumbnail image URL."""
-    # This path might still be relative to the old structure, needs verification
-    # If data_blob is the list starting at actual_data[6], this index is likely wrong.
-    # We need to find the thumbnail within the new structure from debug_inner_data.json
-    # For now, returning None until verified.
-    # return safe_get(data, 72, 0, 1, 6, 0) # Placeholder index - LIKELY WRONG
-    # Tentative guess based on debug_inner_data structure (might be in a sublist like [14][0][0][6][0]?)
-    return safe_get(data, 14, 0, 0, 6, 0) # Tentative guess
+    return safe_get(data, 14, 0, 0, 6, 0)
 
 def get_open_hours(data):
-    """Extracts the opening hours for each day."""
-    # Path based on Go project: darray[34][1]
     hours_list = safe_get(data, 34, 1)
     if not isinstance(hours_list, list):
         return None
-    
     open_hours = {}
     for item in hours_list:
         if isinstance(item, list) and len(item) >= 2:
@@ -211,83 +169,149 @@ def get_open_hours(data):
             times = safe_get(item, 1)
             if day and isinstance(times, list):
                 open_hours[day] = times
-    
     return open_hours if open_hours else None
 
 def get_images(data):
-    """Extracts a list of images with their titles."""
-    # Path based on Go project: darray[171][0]
     images_list = safe_get(data, 171, 0)
     if not isinstance(images_list, list):
         return None
-        
     images = []
     for item in images_list:
-        # Go project logic: getLinkSource with source:[2] and link:[3,0,6,0]
         title = safe_get(item, 2)
         url = safe_get(item, 3, 0, 6, 0)
         if title and url:
             images.append({"title": title, "image": url})
-            
     return images if images else None
+
+# ==============================================================================
+# === NEW REVIEW SORTING AND SELECTION LOGIC (TASK #1 and #2) ==================
+# ==============================================================================
+
+def process_and_select_reviews(reviews_data):
+    """
+    Sorts, filters, and selects a random subset of reviews based on predefined quality criteria.
+    This function processes raw review data before full parsing to optimize performance.
+    
+    Args:
+        reviews_data (list): The raw list of review data from the 'listugcposts' RPC response.
+
+    Returns:
+        list: A list of 20 (or fewer) parsed user review dictionaries.
+    """
+    if not reviews_data:
+        return []
+
+    ranked_reviews = []
+    for review_item in reviews_data:
+        review = safe_get(review_item, 0)
+        if not review:
+            continue
+
+        # --- Extract only the data needed for ranking ---
+        description = safe_get(review, 2, 15, 0, 0) or ""
+        profile_pic_raw = safe_get(review, 1, 4, 5, 1)
+        date_parts = safe_get(review, 2, 2, 0, 1, 21, 6, 8)
+        author_name = (safe_get(review, 1, 4, 5, 0) or "").lower()
+
+        # --- Calculate ranking criteria based on the hierarchy ---
+        # 1. Length of review description (longer is better)
+        desc_len = len(description)
+        # 2. Has a profile picture
+        has_pic = bool(profile_pic_raw)
+        # 3. Has a specific datetime
+        has_datetime = isinstance(date_parts, list) and len(date_parts) >= 3
+        # 4. Has a "real" username (not a placeholder)
+        is_real_name = author_name not in PLACEHOLDER_USERNAMES
+        
+        # Create a sort key tuple. Python sorts tuples element-by-element,
+        # perfectly matching our hierarchical ranking need.
+        sort_key = (desc_len, has_pic, has_datetime, is_real_name)
+        
+        # Store the key along with the original raw review data
+        ranked_reviews.append((sort_key, review_item))
+
+    # Sort the list of (key, review) tuples. `reverse=True` ensures that
+    # higher lengths and True values are ranked first.
+    ranked_reviews.sort(key=lambda x: x[0], reverse=True)
+
+    # Extract the sorted raw review data
+    sorted_raw_reviews = [item for sort_key, item in ranked_reviews]
+
+    # Create a candidate pool from the top-ranked reviews
+    candidate_pool = sorted_raw_reviews[:REVIEW_CANDIDATE_POOL_SIZE]
+
+    # Randomly select the final set of reviews from the pool
+    if len(candidate_pool) <= REVIEW_SELECTION_COUNT:
+        # If the pool is smaller than our target, take all of them
+        selected_reviews_raw = candidate_pool
+    else:
+        # Otherwise, randomly sample the desired count from the high-quality pool
+        selected_reviews_raw = random.sample(candidate_pool, REVIEW_SELECTION_COUNT)
+    
+    # --- Final Step: Parse ONLY the selected high-quality reviews ---
+    print(f"Selected {len(selected_reviews_raw)} reviews for parsing from a total of {len(reviews_data)}.")
+    return parse_user_reviews(selected_reviews_raw)
+
 
 def parse_user_reviews(reviews_data):
     """
     Parses a list of raw review data from the 'listugcposts' RPC response.
     The index paths are based on the working Go implementation.
+    (This function is now called with a pre-filtered list of reviews)
     """
     if not isinstance(reviews_data, list):
         return None
 
     parsed_reviews = []
     for review_item in reviews_data:
-        # The main review content is nested inside the first element
         review = safe_get(review_item, 0)
         if not review:
             continue
 
         author_name = safe_get(review, 1, 4, 5, 0)
-        
         if not author_name:
-            continue # Skip if essential info is missing
+            continue
 
-        # Decode the URL-encoded profile picture
         pic_url_raw = safe_get(review, 1, 4, 5, 1)
         profile_picture = ""
         if pic_url_raw:
             try:
-                # Basic decoding, can be enhanced if needed
                 profile_picture = bytes(pic_url_raw, "utf-8").decode("unicode_escape")
             except:
                 profile_picture = pic_url_raw
 
-
         description = safe_get(review, 2, 15, 0, 0)
         rating = safe_get(review, 2, 0, 0)
         
-        # --- Datetime Extraction ---
-        # This logic is based on the Go project's successful extraction path.
-        # It retrieves a list like [year, month, day, ...] and formats it.
+         # --- Datetime Extraction with Fallback ---
+        when = "N/A"  # Set a safe default
+
+        # Priority 1: Attempt to extract the absolute date (YYYY-MM-DD).
+        # This is the most precise data and should be preferred.
         date_parts = safe_get(review, 2, 2, 0, 1, 21, 6, 8)
-        when = "N/A"  # Default value
         if isinstance(date_parts, list) and len(date_parts) >= 3:
             try:
-                # Ensure parts are integers before formatting for safety
                 year, month, day = int(date_parts[0]), int(date_parts[1]), int(date_parts[2])
-                # Format to YYYY-MM-DD, zero-padding month and day for ISO 8601 standard.
                 when = f"{year}-{month:02d}-{day:02d}"
             except (ValueError, TypeError):
-                # If parts are not valid integers, fallback to the default "N/A"
+                # The data at the path was not in the expected [Y, M, D] numeric format.
+                # We will let the code proceed to the fallback.
                 pass
 
-        # Extract review images
+        # Priority 2: If absolute date extraction failed, fall back to the relative time string.
+        # The 'when' variable will still be "N/A" if the block above failed or was skipped.
+        if when == "N/A":
+            # This index path is the common location for the relative time string (e.g., "a month ago").
+            relative_time_str = safe_get(review, 1, 1)
+            if isinstance(relative_time_str, str) and relative_time_str:
+                when = relative_time_str
+
         images = []
         images_list = safe_get(review, 2, 2, 0, 1, 21, 7)
         if isinstance(images_list, list):
             for img_item in images_list:
                 img_url = safe_get(img_item)
                 if img_url and isinstance(img_url, str):
-                    # URLs often start with '//', prepend https:
                     images.append("https:" + img_url if img_url.startswith('//') else img_url)
 
         parsed_reviews.append({
@@ -301,8 +325,6 @@ def parse_user_reviews(reviews_data):
 
     return parsed_reviews if parsed_reviews else None
 
-# Add more extraction functions here as needed, using the indices
-# from omkarcloud/src/extract_data.py as a reference, BUT VERIFYING against debug_inner_data.json
 
 def extract_place_data(html_content, all_reviews=None):
     """
@@ -318,11 +340,9 @@ def extract_place_data(html_content, all_reviews=None):
         print("Failed to parse JSON data or find expected structure.")
         return None
     
-    # DEBUG - save the data_blob to a file
     with open('data_blob.json', 'w') as f:
         json.dump(data_blob, f, indent=2)
     
-    # This dictionary now uses the corrected functions and logic
     place_details = {
         "name": get_main_name(data_blob),
         "place_id": get_place_id(data_blob),
@@ -334,24 +354,17 @@ def extract_place_data(html_content, all_reviews=None):
         "website": get_website(data_blob),
         "phone": get_phone_number(data_blob),
         "thumbnail": get_thumbnail(data_blob),
-        
-        # --- Fields to be fixed/confirmed ---
         "open_hours": get_open_hours(data_blob),
         "images": get_images(data_blob),
         
-        # This logic correctly handles the case where reviews are not fetched
-        # or when the fetched list is empty.
-        "user_reviews": parse_user_reviews(all_reviews) if all_reviews else [],
+        # === MODIFIED LINE: Use the new processing function ===
+        "user_reviews": process_and_select_reviews(all_reviews) if all_reviews else [],
     }
 
-    # Filter out keys where the value is None to keep the output clean.
-    # This is why 'open_hours' disappears when not found.
-    # 'user_reviews' will remain as an empty list if no reviews are found.
     return {k: v for k, v in place_details.items() if v is not None}
 
 # Example usage (for testing):
 if __name__ == '__main__':
-    # Load sample HTML content from a file (replace 'sample_place.html' with your file)
     try:
         with open('sample_place.html', 'r', encoding='utf-8') as f:
             sample_html = f.read()
