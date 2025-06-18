@@ -6,10 +6,10 @@ import random # <--- ADDED: For random selection of reviews
 
 # --- CONSTANTS FOR REVIEW SELECTION ---
 # The number of reviews to be randomly selected and stored.
-REVIEW_SELECTION_COUNT = 20
+REVIEW_SELECTION_COUNT = 100
 # A larger pool of top-ranked reviews from which to randomly select.
 # This introduces randomness while still favoring high-quality reviews.
-REVIEW_CANDIDATE_POOL_SIZE = 75
+REVIEW_CANDIDATE_POOL_SIZE = 500
 # A set of placeholder usernames for efficient lookup.
 PLACEHOLDER_USERNAMES = {"google user", "anonymous user", "unknown", "profile name"}
 
