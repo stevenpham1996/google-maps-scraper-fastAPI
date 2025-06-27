@@ -9,7 +9,7 @@ import random # <--- ADDED: For random selection of reviews
 REVIEW_SELECTION_COUNT = 100
 # A larger pool of top-ranked reviews from which to randomly select.
 # This introduces randomness while still favoring high-quality reviews.
-REVIEW_CANDIDATE_POOL_SIZE = 500
+REVIEW_CANDIDATE_POOL_SIZE = 300
 # A set of placeholder usernames for efficient lookup.
 PLACEHOLDER_USERNAMES = {"google user", "anonymous user", "unknown", "profile name"}
 
@@ -67,15 +67,19 @@ def parse_json_data(json_str):
         return None
     try:
         initial_data = json.loads(json_str)
+        
+        # DEBUG - save the initial data to a file for inspection
+        # with open('initial_data.json', 'w') as f:
+        #     json.dump(initial_data, f, indent=2)
 
         app_state = safe_get(initial_data, 3)
         if not isinstance(app_state, dict):
             if isinstance(app_state, list) and len(app_state) > 6:
-                 data_blob_str = safe_get(app_state, 6)
-                 if isinstance(data_blob_str, str) and data_blob_str.startswith(")]}'"):
-                     json_str_inner = data_blob_str.split(")]}'\n", 1)[1]
-                     actual_data = json.loads(json_str_inner)
-                     return safe_get(actual_data, 6)
+                data_blob_str = safe_get(app_state, 6)
+                if isinstance(data_blob_str, str) and data_blob_str.startswith(")]}'"):
+                    json_str_inner = data_blob_str.split(")]}'\n", 1)[1]
+                    actual_data = json.loads(json_str_inner)
+                    return safe_get(actual_data, 6)
             return None
 
         for i in range(65, 91):  # ASCII for 'A' through 'Z'
@@ -102,8 +106,10 @@ def parse_json_data(json_str):
 def get_main_name(data):
     return safe_get(data, 11)
 
+
 def get_place_id(data):
     return safe_get(data, 10)
+
 
 def get_gps_coordinates(data):
     lat = safe_get(data, 9, 2)
@@ -112,6 +118,7 @@ def get_gps_coordinates(data):
         return {"latitude": lat, "longitude": lon}
     return None
 
+
 def get_complete_address(data):
     address_parts = safe_get(data, 2)
     if isinstance(address_parts, list):
@@ -119,14 +126,18 @@ def get_complete_address(data):
         return formatted if formatted else None
     return None
 
+
 def get_rating(data):
     return safe_get(data, 4, 7)
+
 
 def get_reviews_count(data):
     return safe_get(data, 4, 8)
 
+
 def get_website(data):
     return safe_get(data, 7, 0)
+
 
 def _find_phone_recursively(data_structure):
     if isinstance(data_structure, list):
@@ -148,15 +159,27 @@ def _find_phone_recursively(data_structure):
                 return found_phone
     return None
 
+
 def get_phone_number(data_blob):
     found_phone = _find_phone_recursively(data_blob)
     return found_phone if found_phone else None
 
+
 def get_categories(data):
     return safe_get(data, 13)
 
+
 def get_thumbnail(data):
-    return safe_get(data, 14, 0, 0, 6, 0)
+    return safe_get(data, 72, 0, 1, 6, 0)
+
+
+def get_status(data):
+    """
+    Extracts the business status (e.g., 'Open', 'Closed', 'Temporarily closed').
+    The index path [34, 4, 4] is derived from analysis of the Go project.
+    """
+    return safe_get(data, 34, 4, 4)
+
 
 def get_open_hours(data):
     hours_list = safe_get(data, 34, 1)
@@ -171,6 +194,12 @@ def get_open_hours(data):
                 open_hours[day] = times
     return open_hours if open_hours else None
 
+
+def get_price_range(data):
+    """Extracts the price range of the business (e.g., $, $$, $$$)."""
+    return safe_get(data, 4, 2)
+
+
 def get_images(data):
     images_list = safe_get(data, 171, 0)
     if not isinstance(images_list, list):
@@ -183,10 +212,60 @@ def get_images(data):
             images.append({"title": title, "image": url})
     return images if images else None
 
-# ==============================================================================
-# === NEW REVIEW SORTING AND SELECTION LOGIC (TASK #1 and #2) ==================
-# ==============================================================================
 
+def get_about(data):
+    """
+    Extracts the 'About' section, which contains details like Accessibility, Offerings, etc.
+    """
+    # The entire "About" block is located at index path [100, 1] in the main data blob.
+    about_sections_raw = safe_get(data, 100, 1)
+    
+    if not isinstance(about_sections_raw, list):
+        return None
+
+    parsed_about_sections = []
+    for section_raw in about_sections_raw:
+        # Each section contains an ID, Name, and a list of options.
+        section_id = safe_get(section_raw, 0)
+        section_name = safe_get(section_raw, 1)
+        options_raw = safe_get(section_raw, 2)
+
+        if not (section_id and section_name and isinstance(options_raw, list)):
+            continue
+
+        parsed_options = []
+        for option_raw in options_raw:
+            # The option name is at index [1].
+            option_name = safe_get(option_raw, 1)
+            if not option_name:
+                continue
+
+            # The enabled status is determined by a deeply nested value being 1.0.
+            # Path: [2, 1, 0, 0] relative to the option item.
+            is_enabled = safe_get(option_raw, 2, 1, 0, 0) == 1.0
+
+            parsed_options.append({
+                "name": option_name,
+                "enabled": is_enabled
+            })
+        
+        if parsed_options:
+            parsed_about_sections.append({
+                "id": section_id,
+                "name": section_name,
+                "options": parsed_options
+            })
+
+    return parsed_about_sections if parsed_about_sections else None
+
+
+def get_description(data):
+    """Extracts the brief description of the business."""
+    # Path based on Go project: darray[32][1][1]
+    return safe_get(data, 32, 1, 1)
+
+
+# === REVIEW SORTING AND SELECTION LOGIC ==================
 def process_and_select_reviews(reviews_data):
     """
     Sorts, filters, and selects a random subset of reviews based on predefined quality criteria.
@@ -340,8 +419,21 @@ def extract_place_data(html_content, all_reviews=None):
         print("Failed to parse JSON data or find expected structure.")
         return None
     
+    # DEBUG - save the data_blob to a file for inspection
     with open('data_blob.json', 'w') as f:
         json.dump(data_blob, f, indent=2)
+        
+    # ===== handle Business Status =====
+    close_statuses = ['permanently closed', 'temporarily closed', 'closed permanently', 'closed temporarily']
+    raw_status = get_status(data_blob)
+    
+    # Determine final status value ('open' or 'close')
+    final_status = 'open'  # Default to 'open'
+    if raw_status:
+        # Use case-insensitive check for robustness
+        raw_status_lower = raw_status.lower()
+        if any(s in raw_status_lower for s in close_statuses):
+            final_status = 'close'
     
     place_details = {
         "name": get_main_name(data_blob),
@@ -353,12 +445,14 @@ def extract_place_data(html_content, all_reviews=None):
         "categories": get_categories(data_blob),
         "website": get_website(data_blob),
         "phone": get_phone_number(data_blob),
+        "price_range": get_price_range(data_blob),
         "thumbnail": get_thumbnail(data_blob),
         "open_hours": get_open_hours(data_blob),
         "images": get_images(data_blob),
-        
-        # === MODIFIED LINE: Use the new processing function ===
+        "about": get_about(data_blob),
+        "description": get_description(data_blob),
         "user_reviews": process_and_select_reviews(all_reviews) if all_reviews else [],
+        "status": final_status,
     }
 
     return {k: v for k, v in place_details.items() if v is not None}

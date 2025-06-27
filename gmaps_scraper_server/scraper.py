@@ -2,7 +2,6 @@ import json
 import asyncio # Changed from time
 import re
 import random
-import string
 from urllib.parse import quote
 import os
 import base64
@@ -95,7 +94,7 @@ async def fetch_all_reviews(page, place_link):
             next_page_token = extractor.safe_get(data, 1)
             
             # explicit exit condition for loop ---
-            if not next_page_token or page_num >= max_pages:
+            if not next_page_token or page_num >= max_pages or len(all_reviews_data) > 300:
                 break
                 
             page_num += 1
