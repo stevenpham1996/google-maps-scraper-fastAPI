@@ -420,8 +420,8 @@ def extract_place_data(html_content, all_reviews=None):
         return None
     
     # DEBUG - save the data_blob to a file for inspection
-    with open('data_blob.json', 'w') as f:
-        json.dump(data_blob, f, indent=2)
+    # with open('data_blob.json', 'w') as f:
+    #     json.dump(data_blob, f, indent=2)
         
     # ===== handle Business Status =====
     close_statuses = ['permanently closed', 'temporarily closed', 'closed permanently', 'closed temporarily']
@@ -449,8 +449,8 @@ def extract_place_data(html_content, all_reviews=None):
         "thumbnail": get_thumbnail(data_blob),
         "open_hours": get_open_hours(data_blob),
         "images": get_images(data_blob),
-        "about": get_about(data_blob),
-        "description": get_description(data_blob),
+        "about": get_description(data_blob), # the beginning description text in 'About' tab
+        "attributes": get_about(data_blob), # the listed attributes in 'About' tab
         "user_reviews": process_and_select_reviews(all_reviews) if all_reviews else [],
         "status": final_status,
     }
