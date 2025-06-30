@@ -148,28 +148,53 @@ async def scrape_google_maps(query, max_places=None, lang="en", headless=True, e
             await page.goto(search_url, wait_until='domcontentloaded') # Added await
             await asyncio.sleep(2) # Changed to asyncio.sleep, added await
 
-            # --- Handle potential consent forms ---
-            # This is a common pattern, might need adjustment based on specific consent popups
-            try:
-                consent_button_xpath = "//button[.//span[contains(text(), 'Accept all') or contains(text(), 'Reject all')]]"
-                # Wait briefly for the button to potentially appear
-                await page.wait_for_selector(consent_button_xpath, state='visible', timeout=5000) # Added await
-                # Click the "Accept all" or equivalent button if found
-                # Example: Prioritize "Accept all"
-                accept_button = await page.query_selector("//button[.//span[contains(text(), 'Accept all')]]") # Added await
-                if accept_button:
-                    print("Accepting consent form...")
-                    await accept_button.click() # Added await
-                else:
-                    # Fallback to clicking the first consent button found (might be reject)
-                    print("Clicking first available consent button...")
-                    await page.locator(consent_button_xpath).first.click() # Added await
-                # Wait for navigation/popup closure
-                await page.wait_for_load_state('networkidle', timeout=5000) # Added await
-            except PlaywrightTimeoutError:
-                print("No consent form detected or timed out waiting.")
-            except Exception as e:
-                print(f"Error handling consent form: {e}")
+            # --- Handle potential consent forms (Optimized with Retry Logic) ---
+            consent_button_locator = page.locator("//button[.//span[contains(text(), 'Accept all') or contains(text(), 'Reject all')]]")
+            feed_locator = page.locator('[role="feed"]')
+            combined_locator = consent_button_locator.or_(feed_locator)
+
+            max_consent_retries = 3
+            initial_consent_timeout = 5000  # Start with a 5-second timeout
+
+            consent_handled = False
+            for attempt in range(max_consent_retries):
+                # Exponentially increase timeout: 5s, 10s, 20s
+                timeout = initial_consent_timeout * (2 ** attempt)
+                print(f"Consent/Feed Check, Attempt {attempt + 1}/{max_consent_retries} (Timeout: {timeout/1000}s)...")
+                
+                try:
+                    # Wait for either the consent button OR the main feed to become visible
+                    await combined_locator.first.wait_for(state='visible', timeout=timeout)
+
+                    # If we reach here, one of the selectors is visible. Check which one.
+                    if await consent_button_locator.is_visible():
+                        print("Consent form detected. Clicking it...")
+                        # Using first to be safe, though there should only be one.
+                        await consent_button_locator.first.click()
+                        # Wait for the page to process the click and settle
+                        await page.wait_for_load_state('networkidle', timeout=5000)
+                        consent_handled = True
+                        break  # Success, exit retry loop
+
+                    # If it wasn't the consent button, it must be the feed.
+                    elif await feed_locator.is_visible():
+                        print("Main feed detected. Assuming no consent form was shown. Proceeding.")
+                        consent_handled = True
+                        break  # Success, exit retry loop
+
+                except PlaywrightTimeoutError:
+                    print(f"Timeout on attempt {attempt + 1}. Neither consent form nor main feed loaded in time.")
+                    if attempt == max_consent_retries - 1:
+                        print("Max retries reached. Failed to find consent form or load main feed.")
+                        # Optionally, take a screenshot for debugging before failing
+                        await page.screenshot(path='consent_failure_screenshot.png')
+                        # Re-raise the final timeout error to be caught by the outer handler
+                        raise
+
+            # This check ensures the loop was successfully exited
+            if not consent_handled:
+                # This state should ideally not be reached, but it's a good safeguard.
+                raise Exception("Fatal: Could not handle consent or verify main content after all retries.")
 
 
             # --- Scrolling and Link Extraction ---
