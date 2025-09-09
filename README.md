@@ -59,24 +59,41 @@ curl "http://gmaps_scraper_api_service:8001/scrape-get?query=hotels%20in%2098392
 
 ## Running the Service
 
-### Docker
+### Docker (Recommended)
 ```bash
 docker-compose up --build
 ```
 
 ### Local Development
-1. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
 
-2. Run the API:
-```bash
-uvicorn gmaps_scraper_server.main_api:app --reload
-```
+For local development, you can use `uvicorn` for auto-reloading or `gunicorn` to simulate a production environment.
 
+1.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+    
+2.  **Install Playwright browser dependencies:**
+    ```bash
+    playwright install --with-deps
+    ```
 
-The API will be available at `http://localhost:8001`
+3.  **Run with Uvicorn (for development with auto-reload):**
+    ```bash
+    uvicorn gmaps_scraper_server.main_api:app --reload --port 8000
+    ```
+
+4.  **Run with Gunicorn (for production-like testing):**
+    This uses the `gunicorn_conf.py` file to run multiple worker processes, maximizing performance.
+    ```bash
+    gunicorn gmaps_scraper_server.main_api:app -c gunicorn_conf.py
+    ```
+    You can override settings with environment variables:
+    ```bash
+    GUNICORN_WORKERS=4 GUNICORN_TIMEOUT=300 gunicorn gmaps_scraper_server.main_api:app -c gunicorn_conf.py
+    ```
+
+The API will be available at `http://localhost:8000` (or the port specified in `gunicorn_conf.py` or Docker).
 
 or for docker:
 

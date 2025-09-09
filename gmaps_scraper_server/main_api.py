@@ -1,24 +1,43 @@
 from fastapi import FastAPI, HTTPException, Query
 from typing import Optional, List, Dict, Any
 import logging
+from contextlib import asynccontextmanager
+import os
 
-# Import the scraper function (adjust path if necessary)
+# Import the browser manager and scraper function
 try:
+    from gmaps_scraper_server.browser_manager import browser_manager
     from gmaps_scraper_server.scraper import scrape_google_maps
 except ImportError:
-    # Handle case where scraper might be in a different structure later
-    logging.error("Could not import scrape_google_maps from scraper.py")
-    # Define a dummy function to allow API to start, but fail on call
+    logging.error("Could not import modules from gmaps_scraper_server.")
+    # Define dummy functions and objects to allow API to start, but fail on call
+    class DummyBrowserManager:
+        async def start_browser(self, *args, **kwargs): pass
+        async def stop_browser(self, *args, **kwargs): pass
+    browser_manager = DummyBrowserManager()
     def scrape_google_maps(*args, **kwargs):
         raise ImportError("Scraper function not available.")
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Manages the application's lifespan.
+    Starts the browser when the app starts, and closes it when the app stops.
+    """
+    # Get headless mode from environment variable, default to True
+    headless_mode = os.environ.get("HEADLESS", "true").lower() == "true"
+    await browser_manager.start_browser(headless=headless_mode)
+    yield
+    await browser_manager.stop_browser()
+
 app = FastAPI(
     title="Google Maps Scraper API",
     description="API to trigger Google Maps scraping based on a query.",
-    version="0.1.0",
+    version="0.2.0", # Version bump for new architecture
+    lifespan=lifespan
 )
 
 @app.post("/scrape", response_model=List[Dict[str, Any]])
@@ -26,22 +45,17 @@ async def run_scrape(
     query: str = Query(..., description="The search query for Google Maps (e.g., 'restaurants in New York')"),
     max_places: Optional[int] = Query(None, description="Maximum number of places to scrape. Scrapes all found if None."),
     lang: str = Query("en", description="Language code for Google Maps results (e.g., 'en', 'es')."),
-    headless: bool = Query(True, description="Run the browser in headless mode (no UI). Set to false for debugging locally."),
     extract_reviews: bool = Query(True, description="Set to true to extract all user reviews (slower).")
 ):
     """
     Triggers the Google Maps scraping process for the given query.
     """
-    logging.info(f"Received scrape request for query: '{query}', max_places: {max_places}, lang: {lang}, headless: {headless}, extract_reviews: {extract_reviews}")
+    logging.info(f"Received scrape request for query: '{query}', max_places: {max_places}, lang: {lang}, extract_reviews: {extract_reviews}")
     try:
-        # Run the potentially long-running scraping task
-        # Note: For production, consider running this in a background task queue (e.g., Celery)
-        # to avoid blocking the API server for long durations.
-        results = await scrape_google_maps( # Added await
+        results = await scrape_google_maps(
             query=query,
             max_places=max_places,
             lang=lang,
-            headless=headless, # Pass headless option from API
             extract_reviews=extract_reviews
         )
         logging.info(f"Scraping finished for query: '{query}'. Found {len(results)} results.")
@@ -51,7 +65,6 @@ async def run_scrape(
          raise HTTPException(status_code=500, detail="Server configuration error: Scraper not available.")
     except Exception as e:
         logging.error(f"An error occurred during scraping for query '{query}': {e}", exc_info=True)
-        # Consider more specific error handling based on scraper exceptions
         raise HTTPException(status_code=500, detail=f"An internal error occurred during scraping: {str(e)}")
 
 @app.get("/scrape-get", response_model=List[Dict[str, Any]])
@@ -59,22 +72,17 @@ async def run_scrape_get(
     query: str = Query(..., description="The search query for Google Maps (e.g., 'restaurants in New York')"),
     max_places: Optional[int] = Query(None, description="Maximum number of places to scrape. Scrapes all found if None."),
     lang: str = Query("en", description="Language code for Google Maps results (e.g., 'en', 'es')."),
-    headless: bool = Query(True, description="Run the browser in headless mode (no UI). Set to false for debugging locally."),
     extract_reviews: bool = Query(True, description="Set to true to extract all user reviews (slower).")
 ):
     """
     Triggers the Google Maps scraping process for the given query via GET request.
     """
-    logging.info(f"Received GET scrape request for query: '{query}', max_places: {max_places}, lang: {lang}, headless: {headless}, extract_reviews: {extract_reviews}")
+    logging.info(f"Received GET scrape request for query: '{query}', max_places: {max_places}, lang: {lang}, extract_reviews: {extract_reviews}")
     try:
-        # Run the potentially long-running scraping task
-        # Note: For production, consider running this in a background task queue (e.g., Celery)
-        # to avoid blocking the API server for long durations.
-        results = await scrape_google_maps( # Added await
+        results = await scrape_google_maps(
             query=query,
             max_places=max_places,
             lang=lang,
-            headless=headless, # Pass headless option from API
             extract_reviews=extract_reviews
         )
         logging.info(f"Scraping finished for query: '{query}'. Found {len(results)} results.")
@@ -84,7 +92,6 @@ async def run_scrape_get(
          raise HTTPException(status_code=500, detail="Server configuration error: Scraper not available.")
     except Exception as e:
         logging.error(f"An error occurred during scraping for query '{query}': {e}", exc_info=True)
-        # Consider more specific error handling based on scraper exceptions
         raise HTTPException(status_code=500, detail=f"An internal error occurred during scraping: {str(e)}")
 
 
