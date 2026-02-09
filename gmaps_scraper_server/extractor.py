@@ -2,7 +2,10 @@
 
 import json
 import re
-import random # <--- ADDED: For random selection of reviews
+import random
+import os
+import time
+import shutil
 
 # --- CONSTANTS FOR REVIEW SELECTION ---
 # The number of reviews to be randomly selected and stored.
@@ -43,104 +46,413 @@ def extract_initial_json(html_content):
     Extracts the JSON string assigned to window.APP_INITIALIZATION_STATE from HTML content.
     """
     try:
+        # Pattern 1: Standard pattern with APP_FLAGS suffix
         match = re.search(r';window\.APP_INITIALIZATION_STATE\s*=\s*(.*?);window\.APP_FLAGS', html_content, re.DOTALL)
         if match:
-            json_str = match.group(1)
-            if json_str.strip().startswith(('[', '{')):
-                return json_str
-            else:
-                print("Extracted content doesn't look like valid JSON start.")
-                return None
-        else:
-            print("APP_INITIALIZATION_STATE pattern not found.")
-            return None
+             return match.group(1)
+        
+        # Pattern 2: Sometimes it ends with a generic semicolon or script tag end
+        match = re.search(r';window\.APP_INITIALIZATION_STATE\s*=\s*(.*?);', html_content, re.DOTALL)
+        if match:
+             return match.group(1)
+
+        return None
     except Exception as e:
         print(f"Error extracting JSON string: {e}")
         return None
 
+def extract_json_ld(html_content):
+    """
+    Extracts and parses the JSON-LD data from the HTML.
+    This provides rich data (Address, Phone, Geo) even when the internal API blob is missing it.
+    """
+    try:
+        # Simple regex to find the script tag content. 
+        # Non-greedy match until the closing tag.
+        match = re.search(r'<script type="application/ld\+json">(.*?)</script>', html_content, re.DOTALL)
+        if match:
+            json_str = match.group(1)
+            # print("JSON-LD found!")
+            return json.loads(json_str)
+        else:
+            print("JSON-LD regex match failed.")
+            # Save HTML for inspection
+            save_debug_content(html_content, prefix="failed_json_ld_html", extension="html")
+    except Exception as e:
+        print(f"Error extracting JSON-LD: {e}")
+    return None
+
+
+def extract_from_dom(html_content):
+    """
+    Extracts data directly from HTML using regex pattern matching on DOM elements.
+    This is a fallback for when JSON-LD and internal API blobs are missing or incomplete.
+    Targeting specific aria-labels and class names observed in failure artifacts.
+    """
+    data = {}
+    try:
+        # Address
+        # Pattern: aria-label="Address: ..."
+        address_match = re.search(r'aria-label="Address:\s*([^"]+)"', html_content)
+        if address_match:
+            data["address"] = address_match.group(1).strip()
+
+        # Phone
+        # Pattern: aria-label="Phone: ..."
+        phone_match = re.search(r'aria-label="Phone:\s*([^"]+)"', html_content)
+        if phone_match:
+            data["phone"] = phone_match.group(1).strip()
+
+        # Website
+        # Pattern: Look for href in the anchor that has aria-label="Website:..."
+        # We try both orders of attributes just in case
+        website_match = re.search(r'aria-label="Website:[^"]*"[^>]*href="([^"]+)"', html_content)
+        if not website_match:
+            website_match = re.search(r'href="([^"]+)"[^>]*aria-label="Website:[^"]*"', html_content)
+        
+        if website_match:
+            raw_url = website_match.group(1).strip()
+            # Clean Google redirect if present
+            if "/url?q=" in raw_url:
+                # Extract the actual URL from q parameter
+                # raw_url is like /url?q=https://...&opi=...
+                # Simple regex or split
+                q_match = re.search(r'q=([^&]+)', raw_url)
+                if q_match:
+                    from urllib.parse import unquote
+                    data["website"] = unquote(q_match.group(1)).rstrip('/')
+                else:
+                    data["website"] = raw_url.rstrip('/')
+            else:
+                 data["website"] = raw_url.rstrip('/')
+        else:
+            # Fallback to just the text in aria-label if href not found
+            website_text_match = re.search(r'aria-label="Website:\s*([^\"]+)"', html_content)
+            if website_text_match:
+                data["website"] = website_text_match.group(1).strip().rstrip('/')
+
+        # Rating
+        # Pattern: aria-label="4.6 stars"
+        rating_match = re.search(r'aria-label="([\d.]+)\s*stars"', html_content)
+        if rating_match:
+            try:
+                data["rating"] = float(rating_match.group(1))
+            except ValueError:
+                pass
+
+        # Reviews Count
+        # Pattern: aria-label="1,260 reviews"
+        reviews_match = re.search(r'aria-label="([\d,]+)\s*reviews"', html_content)
+        if reviews_match:
+            try:
+                count_str = reviews_match.group(1).replace(',', '')
+                data["reviews_count"] = int(count_str)
+            except ValueError:
+                pass
+
+        # Price Range
+        # Artifact shows: <div class="kp-header-price"><span>$100–200</span></div>
+        # Or look for aria-label with price? often not in aria-label.
+        # Try finding standard price patterns separated by mid-dot or similar
+        price_match = re.search(r'>([$€£¥]+[^<]+)</span>', html_content)
+        if price_match and any(c.isdigit() for c in price_match.group(1)):
+             # This is very weak, might capture random spans. 
+             # Let's stick to the class based one but make it looser
+             pass
+        price_class_match = re.search(r'class="[^"]*price[^"]*">[^<]*<span>([^<]+)</span>', html_content)
+        if price_class_match:
+            data["price_range"] = price_class_match.group(1).strip()
+        
+        # Open Hours
+        # Artifact shows: <div class="kp-hours-item"><span>Friday: 2–9 PM</span></div>
+        # ALSO check for aria-labels on the table rows or divs if present.
+        # "Monday, 9 AM to 5 PM"
+        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        open_hours = {}
+        
+        # Strategy 1: aria-labels with "Day, Time"
+        for day in days:
+            # Regex to find "Monday, 9AM to 5PM" or "Monday, Closed"
+            # format in aria-label often: "Monday, 9:00 AM – 5:00 PM"
+            day_regex = fr'aria-label="({day}, [^"]+)"'
+            match = re.search(day_regex, html_content)
+            if match:
+                full_text = match.group(1)
+                # Remove day from text to get hours
+                time_text = full_text.replace(f"{day},", "").strip()
+                # Clean up "Copy open hours" and other noise
+                time_text = re.sub(r',?\s*Copy open hours.*', '', time_text, flags=re.IGNORECASE)
+                time_text = re.sub(r',?\s*Hide open hours.*', '', time_text, flags=re.IGNORECASE)
+                
+                # Replace unicode no-break space if present
+                time_text = time_text.replace('\u202f', ' ')
+                
+                open_hours[day] = time_text.strip()
+        
+        if not open_hours:
+            # Strategy 2: Look for class-based tables (fallback)
+            hours_matches = re.findall(r'class="[^"]*hours-item[^"]*">[^<]*<span>([^<]+)</span>', html_content)
+            if hours_matches:
+                for item in hours_matches:
+                    if ':' in item:
+                        day, time_range = item.split(':', 1)
+                        if day.strip() in days:
+                            open_hours[day.strip()] = time_range.strip()
+
+        if open_hours:
+            data["open_hours"] = open_hours
+
+        # Images
+        # Artifact shows: <div class="kp-image-item"><img src="..."></div>
+        img_matches = re.findall(r'<div class="[^"]*image-item[^"]*">[^<]*<img[^>]+src="([^"]+)"', html_content)
+        if img_matches:
+            images = []
+            for src in img_matches:
+                # Initialize with just image url, title might be in alt
+                images.append({"image": src})
+            data["images"] = images
+
+        # Categories
+        # Artifact shows: <div class="kp-header-category"><button ...>Espresso bar</button>
+        category_match = re.search(r'<div class="[^"]*category[^"]*">[^<]*<button[^>]*>([^<]+)</button>', html_content)
+        if category_match:
+             data["categories"] = [category_match.group(1).strip()]
+
+        return data
+    except Exception as e:
+        print(f"Error in extract_from_dom: {e}")
+        return {}
+
+
+def _find_app_init_blob(data):
+    """
+    Specifically looks for the blob at data[5][3][2] which seems to be a fallback
+    schema in APP_INITIALIZATION_STATE when JSON-LD is missing.
+    """
+    try:
+        candidate = safe_get(data, 5, 3, 2)
+        if isinstance(candidate, list) and len(candidate) > 2:
+            # Check for Place ID signature at index 0
+            # format: 0x...:0x...
+            val = candidate[0]
+            if isinstance(val, str) and val.startswith("0x") and ":" in val:
+                 return candidate
+    except:
+        pass
+    return None
+
+def _find_all_blobs(data):
+    """
+    Recursively searches through a nested structure (lists and dicts) 
+    and collects ALL unique strings that start with the signature ")]}'".
+    Returns a list of parsed JSON objects/lists.
+    """
+    blobs = []
+    
+    # Check for direct APP_INITIALIZATION_STATE blob first
+    direct_blob = _find_app_init_blob(data)
+    if direct_blob:
+        blobs.append(direct_blob)
+
+    def recursive_search(d):
+        if isinstance(d, str):
+            if d.startswith(")]}'"):
+                try:
+                    # Parse immediately to filter out invalid ones
+                    json_str_inner = d.split(")]}'\n", 1)[1]
+                    parsed = json.loads(json_str_inner)
+                    # Avoid duplicates (comparing heavy objects is expensive, but necessary if structure allows)
+                    # For now just append, we can score them later.
+                    blobs.append(parsed)
+                except:
+                    pass
+        elif isinstance(d, list):
+             # Optimization: don't recurse into the blob we just found
+            for item in d:
+                recursive_search(item)
+        elif isinstance(d, dict):
+            for value in d.values():
+                recursive_search(value)
+
+    recursive_search(data)
+    return blobs
+
 def parse_json_data(json_str):
     """
-    Parses the initial JSON, finds the dynamic key, and extracts the main data blob.
-    This mimics the logic from the Go project's JS extractor.
+    Parses the initial JSON, finds all potential data blobs, scores them,
+    and returns the best candidate for extraction.
     """
-    if not json_str:
-        return None
     try:
         initial_data = json.loads(json_str)
+        candidates = _find_all_blobs(initial_data)
         
-        # DEBUG - save the initial data to a file for inspection
-        # with open('initial_data.json', 'w') as f:
-        #     json.dump(initial_data, f, indent=2)
-
-        app_state = safe_get(initial_data, 3)
-        if not isinstance(app_state, dict):
-            if isinstance(app_state, list) and len(app_state) > 6:
-                data_blob_str = safe_get(app_state, 6)
-                if isinstance(data_blob_str, str) and data_blob_str.startswith(")]}'"):
-                    json_str_inner = data_blob_str.split(")]}'\n", 1)[1]
-                    actual_data = json.loads(json_str_inner)
-                    return safe_get(actual_data, 6)
+        if not candidates:
             return None
 
-        for i in range(65, 91):  # ASCII for 'A' through 'Z'
-            key = chr(i) + "f"
-            if key in app_state:
-                data_blob_str = safe_get(app_state, key, 6)
-                if isinstance(data_blob_str, str) and data_blob_str.startswith(")]}'"):
-                    print(f"Found data blob under dynamic key: '{key}'")
-                    json_str_inner = data_blob_str.split(")]}'\n", 1)[1]
-                    actual_data = json.loads(json_str_inner)
-                    final_blob = safe_get(actual_data, 6)
-                    if isinstance(final_blob, list):
-                        return final_blob
+        best_blob = None
+        max_score = -1
         
-        print("Could not find the data blob using dynamic key search.")
-        return None
+        for i, blob in enumerate(candidates):
+            score = 0
+            
+            # --- Scoring Logic ---
+            # We check both top-level and [0][1] nested level for the common fields
+            
+            # Detect if this is the "Single Place/Search Result" rich blob
+            # Root is usually data[0][1] for these rich embedded blobs
+            root = safe_get(blob, 0, 1)
+            is_rich_nested = isinstance(root, list)
+            
+            # 1. Place ID Check (Heavy Weight: +10)
+            id_val = safe_get(blob, 10) or safe_get(blob, 0, 0)
+            if not id_val and is_rich_nested:
+                # In nested rich blob, ID might be at [0, 1, 14, 11] as part of a list or CID
+                # but often [10] still works if we get the right root.
+                # Actually, let's just check for '0x' strings anywhere in the first few levels
+                id_val = safe_get(root, 10)
 
-    except (json.JSONDecodeError, IndexError, TypeError) as e:
-        print(f"Error parsing JSON data: {e}")
+            if isinstance(id_val, str) and id_val.startswith("0x"):
+                score += 10
+            
+            # 2. Coordinates Check (+5)
+            lat = safe_get(blob, 9, 2) or safe_get(blob, 0, 1, 9, 2) or safe_get(blob, 7, 2)
+            if isinstance(lat, (int, float)):
+                score += 5
+            
+            # 3. Address Check (+5)
+            addr = safe_get(blob, 2) or safe_get(blob, 0, 1, 2, 0)
+            if addr:
+                score += 5
+            
+            # 4. Web/Phone Check (+3)
+            if safe_get(blob, 7, 0) or safe_get(blob, 0, 1, 7, 0): # Website
+                score += 3
+                
+            if score > max_score:
+                max_score = score
+                best_blob = blob
+        
+        return best_blob
+
+    except Exception as e:
         return None
 
 
 # --- Field Extraction Functions ---
 def get_main_name(data):
-    return safe_get(data, 11)
-
-
-def get_place_id(data):
-    return safe_get(data, 10)
-
-
-def get_gps_coordinates(data):
-    lat = safe_get(data, 9, 2)
-    lon = safe_get(data, 9, 3)
-    if lat is not None and lon is not None:
-        return {"latitude": lat, "longitude": lon}
+    # Try multiple standard and nested paths
+    paths = [
+        (11,), (0, 1, 60), (0, 1, 14, 11), (0, 1), (1,),
+        (60,), (14, 11) # If data is already the root
+    ]
+    for p in paths:
+        val = safe_get(data, *p)
+        if isinstance(val, str) and val and not val.startswith("0x"): return val
     return None
 
 
+def get_place_id(data):
+    paths = [
+        (10,), (0, 1, 10), (0, 0), (0,), (14, 11)
+    ]
+    for p in paths:
+        val = safe_get(data, *p)
+        if isinstance(val, str) and val and val.startswith("0x"): return val
+    return None
+
+
+def get_gps_coordinates(data):
+    paths = [
+        (9, 2), (0, 1, 9, 2), (0, 1, 2, 2), (7, 2), (2, 2)
+    ]
+    for p in paths:
+        lat = safe_get(data, *p)
+        # Corresponding longitude is usually at lat_idx + 1
+        lon_path = list(p)
+        lon_path[-1] += 1
+        lon = safe_get(data, *lon_path)
+        
+        if isinstance(lat, (int, float)) and isinstance(lon, (int, float)) and lat != 0:
+             return {"latitude": lat, "longitude": lon}
+
+    return _find_coordinates_recursively(data)
+
+
+def _find_coordinates_recursively(data, depth=0):
+    if depth > 10: return None
+    if isinstance(data, list):
+        # specific check for [null, null, lat, lon] pattern seen in artifacts
+        # data[2] is lat, data[3] is lon
+        if len(data) >= 4:
+            val1 = data[2]
+            val2 = data[3]
+            # print(f"DEBUG: Checking list at depth {depth}: {[str(x)[:10] for x in data]}")
+            if isinstance(val1, (float, int)) and isinstance(val2, (float, int)):
+                 if -90 <= val1 <= 90 and -180 <= val2 <= 180:
+                     return {"latitude": float(val1), "longitude": float(val2)}
+        
+        # Iterate children
+        for item in data:
+            res = _find_coordinates_recursively(item, depth + 1)
+            if res: return res
+            
+    elif isinstance(data, dict):
+        for key, value in data.items():
+            res = _find_coordinates_recursively(value, depth + 1)
+            if res: return res
+            
+    return None
+
+
+
 def get_complete_address(data):
-    address_parts = safe_get(data, 2)
-    if isinstance(address_parts, list):
-        formatted = ", ".join(filter(None, address_parts))
-        return formatted if formatted else None
+    paths = [
+        (2,), (0, 1, 2, 0), (2, 0), (18,)
+    ]
+    for p in paths:
+        val = safe_get(data, *p)
+        if isinstance(val, list):
+            formatted = ", ".join(filter(None, val))
+            if formatted: return formatted
+        if isinstance(val, str) and val and not val.startswith("0x"): return val
     return None
 
 
 def get_rating(data):
-    return safe_get(data, 4, 7)
+    # Standard
+    val = safe_get(data, 4, 7)
+    if val is not None: return val
+    # Nested
+    val = safe_get(data, 0, 1, 4, 7)
+    if val is not None: return val
+    # Fallback
+    return safe_get(data, 12, 2, 1)
 
 
 def get_reviews_count(data):
-    return safe_get(data, 4, 8)
+    # Standard
+    val = safe_get(data, 4, 8)
+    if val is not None: return val
+    # Nested
+    val = safe_get(data, 0, 1, 4, 8)
+    if val is not None: return val
+    # Fallback
+    return safe_get(data, 13, 14)
 
 
 def get_website(data):
-    return safe_get(data, 7, 0)
-
+    paths = [
+        (7, 0), (0, 1, 7, 0)
+    ]
+    for p in paths:
+        val = safe_get(data, *p)
+        if isinstance(val, str) and val.startswith("http"): return val
+    return None
 
 def _find_phone_recursively(data_structure):
     if isinstance(data_structure, list):
+        # Specific check for phone index in rich blob [178][0][3]
+        # But recursion usually finds it.
         if len(data_structure) >= 2 and \
            isinstance(data_structure[0], str) and "call_googblue" in data_structure[0] and \
            isinstance(data_structure[1], str):
@@ -166,7 +478,17 @@ def get_phone_number(data_blob):
 
 
 def get_categories(data):
-    return safe_get(data, 13)
+    # Standard
+    val = safe_get(data, 13)
+    if val: return val
+    # Single Place: data[13] might be the list of categories in some variants.
+    # But based on typical structure, checks:
+    val = safe_get(data, 13)
+    if isinstance(val, list) and all(isinstance(x, str) for x in val):
+        return val
+    
+    # Another pattern: data[11] is name, data[13] is categories?
+    return None
 
 
 def get_thumbnail(data):
@@ -197,7 +519,11 @@ def get_open_hours(data):
 
 def get_price_range(data):
     """Extracts the price range of the business (e.g., $, $$, $$$)."""
-    return safe_get(data, 4, 2)
+    # Standard
+    val = safe_get(data, 4, 2)
+    if val: return val
+    # Single Place: Not identified in artifact.
+    return None
 
 
 def get_images(data):
@@ -405,57 +731,216 @@ def parse_user_reviews(reviews_data):
     return parsed_reviews if parsed_reviews else None
 
 
+def save_debug_content(content, prefix="debug", extension="txt"):
+    """Saves content to a file in the debug_artifacts directory for inspection."""
+    debug_dir = "debug_artifacts"
+    try:
+        if not os.path.exists(debug_dir):
+            os.makedirs(debug_dir)
+        # else:
+        #     try:
+        #         shutil.rmtree(debug_dir)
+        #     except OSError:
+        #         pass
+        #     if not os.path.exists(debug_dir):
+        #         os.makedirs(debug_dir)
+    except Exception as e:
+        print(f"Warning: Could not manage debug directory: {e}")
+        return # Exit if we can't write debug info
+    
+    # Limit to 10 debug artifacts to avoid cluttering
+    try:
+        existing_files = [f for f in os.listdir(debug_dir) if os.path.isfile(os.path.join(debug_dir, f))]
+        if len(existing_files) >= 10:
+            print(f"Debug artifact limit reached (10). Skipping: {prefix}")
+            return
+    except Exception as e:
+        print(f"Error checking debug directory: {e}")
+    
+    timestamp = int(time.time() * 1000) # Use ms for unique filenames if called quickly
+    filename = f"{debug_dir}/{prefix}_{timestamp}.{extension}"
+    
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            print(f">>>> Saving debug artifact to: {filename}")
+            if isinstance(content, (dict, list)):
+                json.dump(content, f, indent=2)
+            else:
+                f.write(str(content))
+    except Exception as e:
+        print(f"Failed to save debug artifact: {e}")
+
 def extract_place_data(html_content, all_reviews=None):
     """
-    High-level function to orchestrate extraction from HTML content.
+    Orchestrates the extraction process:
+    1. Extract JSON-LD (Rich Data).
+    2. Extract Internal Blob (Multi-Blob Scoring).
+    3. Merge results, prioritizing JSON-LD for core fields.
     """
-    json_str = extract_initial_json(html_content)
-    if not json_str:
-        print("Failed to extract JSON string from HTML.")
-        return None
-
-    data_blob = parse_json_data(json_str)
-    if not data_blob:
-        print("Failed to parse JSON data or find expected structure.")
-        return None
+    final_data = {}
     
-    # DEBUG - save the data_blob to a file for inspection
-    # with open('data_blob.json', 'w') as f:
-    #     json.dump(data_blob, f, indent=2)
+    # 1. JSON-LD Extraction
+    json_ld_data = extract_json_ld(html_content)
+    if json_ld_data:
+        # Map JSON-LD fields to our schema
+        final_data["name"] = json_ld_data.get("name")
+        final_data["website"] = json_ld_data.get("url") or json_ld_data.get("sameAs")
+        final_data["phone"] = json_ld_data.get("telephone")
+        final_data["description"] = json_ld_data.get("description")
         
-    # ===== handle Business Status =====
-    close_statuses = ['permanently closed', 'temporarily closed', 'closed permanently', 'closed temporarily']
-    raw_status = get_status(data_blob)
-    
-    # Determine final status value ('open' or 'close')
-    final_status = 'open'  # Default to 'open'
-    if raw_status:
-        # Use case-insensitive check for robustness
-        raw_status_lower = raw_status.lower()
-        if any(s in raw_status_lower for s in close_statuses):
-            final_status = 'close'
-    
-    place_details = {
-        "name": get_main_name(data_blob),
-        "place_id": get_place_id(data_blob),
-        "coordinates": get_gps_coordinates(data_blob),
-        "address": get_complete_address(data_blob),
-        "rating": get_rating(data_blob),
-        "reviews_count": get_reviews_count(data_blob),
-        "categories": get_categories(data_blob),
-        "website": get_website(data_blob),
-        "phone": get_phone_number(data_blob),
-        "price_range": get_price_range(data_blob),
-        "thumbnail": get_thumbnail(data_blob),
-        "open_hours": get_open_hours(data_blob),
-        "images": get_images(data_blob),
-        "about": get_description(data_blob), # the beginning description text in 'About' tab
-        "attributes": get_about(data_blob), # the listed attributes in 'About' tab
-        "user_reviews": process_and_select_reviews(all_reviews) if all_reviews else [],
-        "status": final_status,
-    }
+        # Address
+        addr = json_ld_data.get("address")
+        if isinstance(addr, dict):
+            # Construct address string or keep dict? CSV expects string usually.
+            # Let's try to make a readable string
+            parts = [
+                addr.get("streetAddress"),
+                addr.get("addressLocality"),
+                addr.get("addressRegion"),
+                addr.get("postalCode"),
+                addr.get("addressCountry")
+            ]
+            final_data["address"] = ", ".join([p for p in parts if p])
+            
+        elif isinstance(addr, str):
+             final_data["address"] = addr
+        
+        # Geo
+        geo = json_ld_data.get("geo")
+        if isinstance(geo, dict):
+            final_data["latitude"] = geo.get("latitude")
+            final_data["longitude"] = geo.get("longitude")
+            
+        # Categories (usually @type is just "Restaurant" or "LocalBusiness")
+        # We might want more granular ones from internal blob, so keep this weak.
+        schema_type = json_ld_data.get("@type")
+        if schema_type:
+            if isinstance(schema_type, str):
+                final_data["categories"] = [schema_type]
+            elif isinstance(schema_type, list):
+                final_data["categories"] = schema_type
+                
+        # Opening Hours
+        # JSON-LD format: "Mo-Fr 09:00-17:00"
+        final_data["open_hours"] = json_ld_data.get("openingHours") or json_ld_data.get("openingHoursSpecification")
+        
+        final_data["rating"] = safe_get(json_ld_data, "aggregateRating", "ratingValue")
+        final_data["reviews_count"] = safe_get(json_ld_data, "aggregateRating", "reviewCount")
+        
+        # print(f"Extracted JSON-LD for: {final_data.get('name')}")
 
-    return {k: v for k, v in place_details.items() if v is not None}
+    # 2. Internal Blob Extraction
+    json_str = extract_initial_json(html_content)
+    # We allow extract_initial_json to fail if JSON-LD was sufficient, but good to have both.
+    
+    internal_data = {}
+    if json_str:
+        parsed_data = parse_json_data(json_str)
+        if parsed_data:
+            internal_data = {
+                "title": get_main_name(parsed_data), # fallback for name
+                "address": get_address(parsed_data) if 'get_address' in globals() else get_complete_address(parsed_data),
+                "attributes": get_attributes(parsed_data) if 'get_attributes' in globals() else get_about(parsed_data),
+                "website": get_website(parsed_data),
+                "phone": get_phone_number(parsed_data),
+                "rating": get_rating(parsed_data),
+                "reviews_count": get_reviews_count(parsed_data),
+                "categories": get_categories(parsed_data), # Internal categories are usually better/more numerous
+                "open_hours": get_open_hours(parsed_data),
+                "images": get_images(parsed_data),
+                "place_id": get_place_id(parsed_data),
+                "thumbnail": get_thumbnail(parsed_data),
+                "about": get_description(parsed_data),
+                "price_range": get_price_range(parsed_data)
+            }
+            
+            # Coordinates from internal blob
+            coords = get_gps_coordinates(parsed_data)
+            if coords:
+                internal_data.update(coords)
+                # Ensure 'coordinates' object is available for scripts expecting it
+                internal_data["coordinates"] = coords
+            
+            # Status
+            close_statuses = ['permanently closed', 'temporarily closed', 'closed permanently', 'closed temporarily']
+            raw_status = get_status(parsed_data)
+            final_status = 'open'
+            if raw_status:
+                raw_status_lower = raw_status.lower()
+                if any(s in raw_status_lower for s in close_statuses):
+                    final_status = 'close'
+            internal_data["status"] = final_status
+    
+    # 3. Merging (JSON-LD wins for "Core" Identity, Internal wins for "Rich" Details like attributes/images)
+    
+    # Helper to merge if empty
+    def merge_if_missing(key, source_val):
+        if not final_data.get(key) and source_val:
+            final_data[key] = source_val
+
+    # ID is crucial. JSON-LD usually doesn't have the google hex ID (has URL).
+    # Internal blob usually has the Hex ID.
+    merge_if_missing("place_id", internal_data.get("place_id"))
+    
+    # If JSON-LD didn't have name (unlikely), take internal
+    if not final_data.get("name"):
+        final_data["name"] = internal_data.get("title")
+
+    # Address/Phone/Web: JSON-LD is usually cleaner, but merge if missing
+    merge_if_missing("address", internal_data.get("address"))
+    merge_if_missing("website", internal_data.get("website"))
+    merge_if_missing("phone", internal_data.get("phone"))
+    
+    # Coordinates: JSON-LD is authoritative if present, else internal
+    merge_if_missing("latitude", internal_data.get("latitude"))
+    merge_if_missing("longitude", internal_data.get("longitude"))
+    
+    # Also create the 'coordinates' object for consistency
+    if final_data.get("latitude") and final_data.get("longitude"):
+        final_data["coordinates"] = {
+            "latitude": final_data["latitude"],
+            "longitude": final_data["longitude"]
+        }
+    
+    # Rating/Reviews: JSON-LD aggregateRating vs Internal
+    merge_if_missing("rating", internal_data.get("rating"))
+    merge_if_missing("reviews_count", internal_data.get("reviews_count"))
+    
+    # Categories: Internal ones are usually specific ("Cat Cafe" vs "LocalBusiness")
+    # If internal has categories, they might be better or supplementary. 
+    # Let's prefer Internal categories if they look like a list of strings
+    int_cats = internal_data.get("categories")
+    if int_cats and isinstance(int_cats, list) and len(int_cats) > 0:
+        # Reuse internal categories as they are Google specific classifications
+        final_data["categories"] = int_cats
+    elif not final_data.get("categories"):
+         final_data["categories"] = []
+
+    # Rich details only in internal usually
+    merge_if_missing("attributes", internal_data.get("attributes"))
+    merge_if_missing("images", internal_data.get("images"))
+    merge_if_missing("open_hours", internal_data.get("open_hours"))
+    merge_if_missing("thumbnail", internal_data.get("thumbnail"))
+    merge_if_missing("about", internal_data.get("about"))
+    merge_if_missing("price_range", internal_data.get("price_range"))
+    merge_if_missing("status", internal_data.get("status"))
+
+    # 4. DOM Fallback Extraction (Final Layer)
+    # Extract only if we are missing critical fields.
+    # We run this Last to avoid overwriting good data with potential debris.
+    if not final_data.get("address") or not final_data.get("phone") or not final_data.get("website") or not final_data.get("open_hours"):
+        dom_data = extract_from_dom(html_content)
+        if dom_data:
+             for key, val in dom_data.items():
+                 merge_if_missing(key, val)
+    
+    # User Reviews are passed in separately
+    final_data["user_reviews"] = process_and_select_reviews(all_reviews) if all_reviews else []
+    
+    # Ensure strict deduplication of inputs if needed, though usually handled by set in scraper.
+    
+    # Clean up None values
+    return {k: v for k, v in final_data.items() if v is not None}
 
 # Example usage (for testing):
 if __name__ == '__main__':

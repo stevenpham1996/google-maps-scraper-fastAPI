@@ -107,59 +107,70 @@ async def scrape_google_maps(query, max_places=None, lang="en", extract_reviews=
 
         search_url = create_search_url(query, lang)
         print(f"Navigating to search URL: {search_url}")
-        await page.goto(search_url, wait_until='domcontentloaded')
+        try:
+            await page.goto(search_url, wait_until='domcontentloaded')
+        except PlaywrightTimeoutError:
+            print("Fatal Error: Timeout during initial navigation. Restarting browser...")
+            await browser_manager.restart_browser()
+            raise Exception("Browser unresponsive. Restarted. Please retry request.")
         await asyncio.sleep(2)
 
         await handle_consent(page)
 
-        print("Scrolling to load places...")
-        feed_selector = '[role="feed"]'
-        try:
-            await page.wait_for_selector(feed_selector, state='visible', timeout=25000)
-        except PlaywrightTimeoutError:
-            if "/maps/place/" in page.url:
-                print("Detected single place page.")
-                place_links.add(page.url)
-            else:
-                print(f"Error: Feed element '{feed_selector}' not found. Taking screenshot.")
-                await page.screenshot(path='feed_not_found_screenshot.png')
-                return []
-
-        if await page.locator(feed_selector).count() > 0:
-            # Scrolling logic remains the same
-            last_height = await page.evaluate(f'document.querySelector(\'{feed_selector}\').scrollHeight')
-            while True:
-                await page.evaluate(f'document.querySelector(\'{feed_selector}\').scrollTop = document.querySelector(\'{feed_selector}\').scrollHeight')
-                await asyncio.sleep(SCROLL_PAUSE_TIME)
-
-                current_links_list = await page.locator(f'{feed_selector} a[href*="/maps/place/"]').evaluate_all('elements => elements.map(a => a.href)')
-                current_links = set(current_links_list)
-                new_links_found = len(current_links - place_links) > 0
-                place_links.update(current_links)
-                print(f"Found {len(place_links)} unique place links so far...")
-
-                if max_places is not None and len(place_links) >= max_places:
-                    print(f"Reached max_places limit ({max_places}).")
-                    place_links = set(list(place_links)[:max_places])
-                    break
-
-                new_height = await page.evaluate(f'document.querySelector(\'{feed_selector}\').scrollHeight')
-                if new_height == last_height:
-                    end_marker_xpath = "//span[contains(text(), \"You've reached the end of the list.\")]"
-                    if await page.locator(end_marker_xpath).count() > 0:
-                        print("Reached the end of the results list.")
-                        break
-                    else:
-                        if not new_links_found:
-                            scroll_attempts_no_new += 1
-                            if scroll_attempts_no_new >= MAX_SCROLL_ATTEMPTS_WITHOUT_NEW_LINKS:
-                                print("Stopping scroll due to lack of new links.")
-                                break
-                        else:
-                            scroll_attempts_no_new = 0
+        # Check for Single Place mode immediately after consent
+        if "/maps/place/" in page.url:
+            print("Detected single place page (via URL check).")
+            place_links.add(page.url)
+        else:
+            print("Scrolling to load places...")
+            feed_selector = '[role="feed"]'
+            try:
+                await page.wait_for_selector(feed_selector, state='visible', timeout=25000)
+            except PlaywrightTimeoutError:
+                # Fallback check if URL updated late or we missed it
+                if "/maps/place/" in page.url:
+                    print("Detected single place page (via fallback).")
+                    place_links.add(page.url)
                 else:
-                    last_height = new_height
-                    scroll_attempts_no_new = 0
+                    print(f"Error: Feed element '{feed_selector}' not found. Taking screenshot.")
+                    await page.screenshot(path='feed_not_found_screenshot.png')
+                    return []
+
+            if await page.locator(feed_selector).count() > 0:
+                # Scrolling logic remains the same
+                last_height = await page.evaluate(f'document.querySelector(\'{feed_selector}\').scrollHeight')
+                while True:
+                    await page.evaluate(f'document.querySelector(\'{feed_selector}\').scrollTop = document.querySelector(\'{feed_selector}\').scrollHeight')
+                    await asyncio.sleep(SCROLL_PAUSE_TIME)
+
+                    current_links_list = await page.locator(f'{feed_selector} a[href*="/maps/place/"]').evaluate_all('elements => elements.map(a => a.href)')
+                    current_links = set(current_links_list)
+                    new_links_found = len(current_links - place_links) > 0
+                    place_links.update(current_links)
+                    print(f"Found {len(place_links)} unique place links so far...")
+
+                    if max_places is not None and len(place_links) >= max_places:
+                        print(f"Reached max_places limit ({max_places}).")
+                        place_links = set(list(place_links)[:max_places])
+                        break
+
+                    new_height = await page.evaluate(f'document.querySelector(\'{feed_selector}\').scrollHeight')
+                    if new_height == last_height:
+                        end_marker_xpath = "//span[contains(text(), \"You've reached the end of the list.\")]"
+                        if await page.locator(end_marker_xpath).count() > 0:
+                            print("Reached the end of the results list.")
+                            break
+                        else:
+                            if not new_links_found:
+                                scroll_attempts_no_new += 1
+                                if scroll_attempts_no_new >= MAX_SCROLL_ATTEMPTS_WITHOUT_NEW_LINKS:
+                                    print("Stopping scroll due to lack of new links.")
+                                    break
+                            else:
+                                scroll_attempts_no_new = 0
+                    else:
+                        last_height = new_height
+                        scroll_attempts_no_new = 0
         
         await page.close() # Close the initial search page
 
@@ -171,7 +182,20 @@ async def scrape_google_maps(query, max_places=None, lang="en", extract_reviews=
 
             tasks = [scrape_place_details(context, link, extract_reviews, semaphore) for link in place_links]
             scraped_data_list = await asyncio.gather(*tasks)
-            results = [data for data in scraped_data_list if data is not None]
+            
+            results = []
+            seen_place_ids = set()
+            for data in scraped_data_list:
+                if data and "place_id" in data:
+                    pid = data["place_id"]
+                    if pid not in seen_place_ids:
+                        seen_place_ids.add(pid)
+                        results.append(data)
+                elif data:
+                     # If no place_id, we can't deduplicate safely, or maybe just include it?
+                     # Let's include it but log warning
+                     print(f"Warning: Result without place_id found: {data.get('name')}")
+                     results.append(data)
 
     except Exception as e:
         print(f"An error occurred during scraping: {e}")
@@ -223,9 +247,12 @@ async def handle_consent(page):
     """Handles the consent form if it appears."""
     consent_button_locator = page.locator("//button[.//span[contains(text(), 'Accept all') or contains(text(), 'Reject all')]]")
     feed_locator = page.locator('[role="feed"]')
-    combined_locator = consent_button_locator.or_(feed_locator)
+    # Generic main container, present on Place Details pages
+    place_mode_locator = page.locator('[role="main"]')
+    
+    combined_locator = consent_button_locator.or_(feed_locator).or_(place_mode_locator)
 
-    max_consent_retries = 3
+    max_consent_retries = 5
     initial_consent_timeout = 5000
 
     for attempt in range(max_consent_retries):
@@ -243,6 +270,10 @@ async def handle_consent(page):
 
             elif await feed_locator.is_visible():
                 print("Main feed detected. No consent form shown.")
+                return
+            
+            elif await place_mode_locator.is_visible():
+                print("Detected Place Details mode (Single Result). No consent needed.")
                 return
 
         except PlaywrightTimeoutError:
