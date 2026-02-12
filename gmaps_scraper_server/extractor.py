@@ -146,22 +146,22 @@ def extract_from_dom(html_content):
         if reviews_match:
             try:
                 count_str = reviews_match.group(1).replace(',', '')
-                data["reviews_count"] = int(count_str)
+                val = int(count_str)
+                # Ignore placeholder 10112
+                if val != 10112:
+                    data["reviews_count"] = val
             except ValueError:
                 pass
 
         # Price Range
-        # Artifact shows: <div class="kp-header-price"><span>$100–200</span></div>
-        # Or look for aria-label with price? often not in aria-label.
-        # Try finding standard price patterns separated by mid-dot or similar
-        price_match = re.search(r'>([$€£¥]+[^<]+)</span>', html_content)
-        if price_match and any(c.isdigit() for c in price_match.group(1)):
-             # This is very weak, might capture random spans. 
-             # Let's stick to the class based one but make it looser
-             pass
-        price_class_match = re.search(r'class="[^"]*price[^"]*">[^<]*<span>([^<]+)</span>', html_content)
-        if price_class_match:
-            data["price_range"] = price_class_match.group(1).strip()
+        # Pattern: Handles nested spans <span><span>$100–200</span></span> and en-dashes
+        price_match = re.search(r'(?:<span[^>]*>\s*)+([$€£¥]\d+(?:[–-]\d+)?)(?:\s*</span>)+', html_content)
+        if not price_match:
+            # Fallback to class-based matching
+            price_match = re.search(r'class="[^"]*price[^"]*">[^<]*<span>([^<]+)</span>', html_content)
+        
+        if price_match:
+            data["price_range"] = price_match.group(1).strip()
         
         # Open Hours
         # Artifact shows: <div class="kp-hours-item"><span>Friday: 2–9 PM</span></div>
@@ -202,15 +202,32 @@ def extract_from_dom(html_content):
         if open_hours:
             data["open_hours"] = open_hours
 
+        # Thumbnail
+        # Pattern: Prioritize googleusercontent URLs, exclude maps vector tiles (vt/pb)
+        thumb_patterns = [
+            r'https://lh\d\.googleusercontent\.com/p/[^"&]+',
+            r'src="([^"]+googleusercontent[^"]+)"[^>]*decoding="async"',
+            r'decoding="async"[^>]*src="([^"]+googleusercontent[^"]+)"'
+        ]
+        for pattern in thumb_patterns:
+            match = re.search(pattern, html_content)
+            if match:
+                url = match.group(0) if pattern.startswith('http') else match.group(1)
+                if "vt/pb" not in url:
+                    data["thumbnail"] = url
+                    break
+
         # Images
-        # Artifact shows: <div class="kp-image-item"><img src="..."></div>
-        img_matches = re.findall(r'<div class="[^"]*image-item[^"]*">[^<]*<img[^>]+src="([^"]+)"', html_content)
-        if img_matches:
-            images = []
-            for src in img_matches:
-                # Initialize with just image url, title might be in alt
-                images.append({"image": src})
-            data["images"] = images
+        # Strategy 1: Find all high-res googleusercontent URLs (lh0-lh9)
+        img_urls = re.findall(r'https://lh\d\.googleusercontent\.com/p/[^"&]+', html_content)
+        if img_urls:
+            unique_imgs = list(dict.fromkeys(img_urls))
+            data["images"] = [{"image": url} for url in unique_imgs[:10]]
+        else:
+            # Fallback to class-based matching
+            img_matches = re.findall(r'<div class="[^"]*image-item[^"]*">[^<]*<img[^>]+src="([^"]+)"', html_content)
+            if img_matches:
+                data["images"] = [{"image": src} for src in img_matches]
 
         # Categories
         # Artifact shows: <div class="kp-header-category"><button ...>Espresso bar</button>
@@ -407,7 +424,7 @@ def _find_coordinates_recursively(data, depth=0):
 
 def get_complete_address(data):
     paths = [
-        (2,), (0, 1, 2, 0), (2, 0), (18,)
+        (2,), (0, 1, 2, 0), (2, 0)
     ]
     for p in paths:
         val = safe_get(data, *p)
@@ -751,8 +768,8 @@ def save_debug_content(content, prefix="debug", extension="txt"):
     # Limit to 10 debug artifacts to avoid cluttering
     try:
         existing_files = [f for f in os.listdir(debug_dir) if os.path.isfile(os.path.join(debug_dir, f))]
-        if len(existing_files) >= 10:
-            print(f"Debug artifact limit reached (10). Skipping: {prefix}")
+        if len(existing_files) >= 50:
+            print(f"Debug artifact limit reached (50). Skipping: {prefix}")
             return
     except Exception as e:
         print(f"Error checking debug directory: {e}")

@@ -177,7 +177,7 @@ async def scrape_google_maps(query, max_places=None, lang="en", extract_reviews=
         # --- Scraping Individual Places Concurrently ---
         if place_links:
             print(f"\nScraping details for {len(place_links)} places concurrently...")
-            CONCURRENCY_LIMIT = 15
+            CONCURRENCY_LIMIT = 10
             semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
             tasks = [scrape_place_details(context, link, extract_reviews, semaphore) for link in place_links]
@@ -215,13 +215,34 @@ async def scrape_place_details(context, link, extract_reviews, semaphore):
         try:
             page = await context.new_page()
             print(f"Processing link: {link}")
-            await page.goto(link, wait_until='domcontentloaded')
             
+            # Step 1: Navigate to the page. Use 'commit' to proceed as soon as navigation starts.
+            try:
+                await page.goto(link, wait_until='commit', timeout=60000)
+            except PlaywrightTimeoutError:
+                print(f"  - Navigation Timeout: {link}")
+                return None
+
+            # Step 2: Wait for the main title to appear, indicating the place info is rendered
+            try:
+                # h1.DUwDvf is the standard selector for the business name in the side panel
+                await page.wait_for_selector('h1.DUwDvf', timeout=20000)
+                # Small fixed delay to let other side-panel elements settle
+                await asyncio.sleep(2)
+            except PlaywrightTimeoutError:
+                print(f"  - Processing Timeout (Title not found): {link}")
+                # We proceed anyway as some elements might still be available in the DOM
+            
+            # Step 3: Attempt to expand hours and other lazy-loaded sections
+            await expand_lazy_sections(page)
+            
+            # Step 4: Extract reviews if requested
             all_reviews = None
             if extract_reviews:
                 print(f"  - Extracting all user reviews for: {link}")
                 all_reviews = await fetch_all_reviews(page, link)
 
+            # Step 5: Capture content and parse
             html_content = await page.content()
             place_data = await asyncio.to_thread(extractor.extract_place_data, html_content, all_reviews)
 
@@ -229,18 +250,38 @@ async def scrape_place_details(context, link, extract_reviews, semaphore):
                 place_data['link'] = link
                 return place_data
             else:
-                print(f"  - Failed to extract data for: {link}")
+                print(f"  - Extraction failed (No data found): {link}")
                 return None
 
-        except PlaywrightTimeoutError:
-            print(f"  - Timeout navigating to or processing: {link}")
-            return None
         except Exception as e:
             print(f"  - Error processing {link}: {e}")
             return None
         finally:
             if page:
                 await page.close()
+
+async def expand_lazy_sections(page):
+    """
+    Attempts to expand sections like 'Hours' that are often collapsed or lazy-loaded.
+    """
+    try:
+        # 1. Expand Open Hours
+        # Commonly has aria-label like "Show open hours for the week" or a dropdown icon
+        hours_button = page.locator('//div[contains(@aria-label, "Hours")]//div[contains(@class, "dropdown")]').or_(
+            page.locator('//button[contains(@aria-label, "Show open hours for the week")]')
+        ).or_(
+            page.locator('[data-section-id="hours"]')
+        )
+        
+        if await hours_button.count() > 0:
+            # Click the first one found
+            await hours_button.first.click()
+            # Wait a moment for expansion
+            await asyncio.sleep(0.5)
+            
+    except Exception as e:
+        # Non-critical, so just log it
+        print(f"  - Note: Could not expand some sections: {e}")
 
 
 async def handle_consent(page):

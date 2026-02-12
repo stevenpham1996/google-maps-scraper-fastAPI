@@ -3,11 +3,13 @@ from typing import Optional, List, Dict, Any
 import logging
 from contextlib import asynccontextmanager
 import os
+import shutil
 
 # Import the browser manager and scraper function
 try:
     from gmaps_scraper_server.browser_manager import browser_manager
     from gmaps_scraper_server.scraper import scrape_google_maps
+    from gmaps_scraper_server.csv_writer import save_to_csv
 except ImportError:
     logging.error("Could not import modules from gmaps_scraper_server.")
     # Define dummy functions and objects to allow API to start, but fail on call
@@ -17,6 +19,8 @@ except ImportError:
     browser_manager = DummyBrowserManager()
     def scrape_google_maps(*args, **kwargs):
         raise ImportError("Scraper function not available.")
+    def save_to_csv(*args, **kwargs):
+        raise ImportError("CSV writer function not available.")
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,6 +31,15 @@ async def lifespan(app: FastAPI):
     Manages the application's lifespan.
     Starts the browser when the app starts, and closes it when the app stops.
     """
+    # Cleanup debug artifacts on startup for a fresh run
+    debug_dir = "debug_artifacts"
+    if os.path.exists(debug_dir):
+        try:
+            shutil.rmtree(debug_dir)
+            logging.info(f"Cleared {debug_dir} for fresh run.")
+        except Exception as e:
+            logging.warning(f"Could not clear {debug_dir}: {e}")
+
     # Get headless mode from environment variable, default to True
     headless_mode = os.environ.get("HEADLESS", "true").lower() == "true"
     await browser_manager.start_browser(headless=headless_mode)
@@ -58,6 +71,10 @@ async def run_scrape(
             lang=lang,
             extract_reviews=extract_reviews
         )
+        
+        # Save results to CSV with deduplication
+        save_to_csv(results)
+        
         logging.info(f"Scraping finished for query: '{query}'. Found {len(results)} results.")
         return results
     except ImportError as e:
@@ -85,6 +102,10 @@ async def run_scrape_get(
             lang=lang,
             extract_reviews=extract_reviews
         )
+        
+        # Save results to CSV with deduplication
+        save_to_csv(results)
+        
         logging.info(f"Scraping finished for query: '{query}'. Found {len(results)} results.")
         return results
     except ImportError as e:
