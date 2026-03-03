@@ -193,6 +193,12 @@ async def scrape_place_details(context, link, extract_reviews, semaphore):
             print(f"Processing link: {link}")
             await page.goto(link, wait_until='domcontentloaded')
             
+            # Wait for main content to ensure semantic attributes are rendered
+            try:
+                await page.wait_for_selector('div[role="main"]', timeout=5000)
+            except:
+                pass
+            
             all_reviews = None
             if extract_reviews:
                 print(f"  - Extracting all user reviews for: {link}")

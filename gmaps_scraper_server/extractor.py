@@ -3,6 +3,7 @@
 import json
 import re
 import random # <--- ADDED: For random selection of reviews
+import os
 
 # --- CONSTANTS FOR REVIEW SELECTION ---
 # The number of reviews to be randomly selected and stored.
@@ -37,6 +38,82 @@ def safe_get(data, *keys):
         except (IndexError, TypeError, KeyError) as e:
             return None
     return current
+
+
+def extract_from_html(html, pattern, group=1):
+    """Utility to extract a value from HTML using a regex pattern."""
+    if not html:
+        return None
+    match = re.search(pattern, html, re.DOTALL | re.IGNORECASE)
+    if match:
+        try:
+            return match.group(group).strip()
+        except IndexError:
+            return None
+    return None
+
+
+def get_address_from_html(html):
+    """Extracts address from HTML using aria-label or data-item-id."""
+    # Priority 1: aria-label (broad match for "Address")
+    res = extract_from_html(html, r'aria-label="[^"]*(?:Address|Adresse|Indirizzo|Dirección):?\s*([^"]+)"')
+    if res:
+        return res
+    # Priority 2: data-item-id="address"
+    return extract_from_html(html, r'data-item-id="address"[^>]*>.*?<div[^>]*>([^<]+)</div>')
+
+
+def get_phone_from_html(html):
+    """Extracts phone number from HTML using aria-label or tel: link."""
+    # Priority 1: aria-label
+    res = extract_from_html(html, r'aria-label="[^"]*(?:Phone|Téléphone|Telefono|Teléfono):?\s*([^"]+)"')
+    if res:
+        return res
+    # Priority 2: tel: link
+    return extract_from_html(html, r'href="tel:([^"]+)"')
+
+
+def get_website_from_html(html):
+    """Extracts website from HTML using aria-label or data-item-id."""
+    # Priority 1: aria-label
+    res = extract_from_html(html, r'aria-label="[^"]*(?:Website|Site Web|Sito web|Sitio web):?\s*([^"]+)"')
+    if res:
+        return res
+    # Priority 2: data-item-id="authority"
+    return extract_from_html(html, r'data-item-id="authority"[^>]*>.*?<div[^>]*>([^<]+)</div>')
+
+
+def get_rating_from_html(html):
+    """Extracts rating (e.g., '4.1') from HTML aria-labels."""
+    return extract_from_html(html, r'aria-label="([\d.]+)\s*(?:stars|étoiles|stelle|estrellas)"')
+
+
+def get_reviews_count_from_html(html):
+    """Extracts reviews count (e.g., '1,234') from HTML aria-labels."""
+    # This often appears like "(1,234)" or "1,234 reviews"
+    return extract_from_html(html, r'aria-label="(?:\()?([\d,]+)\s*(?:reviews|avis|recensioni|reseñas)(?:\))?"')
+
+
+def get_hours_from_html(html):
+    """
+    Extracts a sample of operating hours from aria-labels.
+    Note: Full weekly hours extraction from HTML is complex; this provides a robust fallback.
+    """
+    return extract_from_html(html, r'aria-label="([A-Za-z]+, \d{1,2}(?::\d{2})?\s*[APM]+ to \d{1,2}(?::\d{2})?\s*[APM]+)"')
+
+
+def get_name_from_html(html):
+    """Extracts name from the <title> tag as a last resort."""
+    return extract_from_html(html, r'<title>([^-]+?)\s*-\s*Google Maps</title>')
+
+
+def get_categories_from_html(html):
+    """
+    Extracts categories from HTML by looking for buttons with category-related jsactions.
+    This is moderately stable as it avoids the specific obfuscated ID.
+    """
+    matches = re.findall(r'jsaction="[^"]*category[^"]*"[^>]*>(?:<span[^>]*>)?([^<]+)(?:</span>)?</button>', html, re.IGNORECASE)
+    return [m.strip() for m in matches if m.strip()]
 
 def extract_initial_json(html_content):
     """
@@ -108,7 +185,8 @@ def get_main_name(data):
 
 
 def get_place_id(data):
-    return safe_get(data, 10)
+    # Primary PlaceID is at [78] as per newest analysis. Fallback to [10].
+    return safe_get(data, 78) or safe_get(data, 10)
 
 
 def get_gps_coordinates(data):
@@ -166,7 +244,11 @@ def get_phone_number(data_blob):
 
 
 def get_categories(data):
-    return safe_get(data, 13)
+    # Extracted as an []any at index 13.
+    raw_cats = safe_get(data, 13)
+    if isinstance(raw_cats, list):
+        return [str(c) for c in raw_cats if isinstance(c, str)]
+    return []
 
 
 def get_thumbnail(data):
@@ -359,8 +441,11 @@ def parse_user_reviews(reviews_data):
             except:
                 profile_picture = pic_url_raw
 
-        description = safe_get(review, 2, 15, 0, 0)
-        rating = safe_get(review, 2, 0, 0)
+        # Text/Description fallback path search strategy
+        description = safe_get(review, 2, 15, 0, 0) or safe_get(review, 2, 15, 0) or safe_get(review, 3, 0)
+        
+        # Rating fallback path search strategy
+        rating = safe_get(review, 2, 0, 0) or safe_get(review, 2, 0) or safe_get(review, 1, 0, 0)
         
          # --- Datetime Extraction with Fallback ---
         when = "N/A"  # Set a safe default
@@ -405,56 +490,96 @@ def parse_user_reviews(reviews_data):
     return parsed_reviews if parsed_reviews else None
 
 
+def get_basic_info_from_initial_json(initial_data):
+    """
+    Extracts 4 basic fields from the window.APP_INITIALIZATION_STATE JSON.
+    As per 2026 analysis, these are the only reliable fields left in this object.
+    """
+    # Path: data[5][3][2]
+    base_path = safe_get(initial_data, 5, 3, 2)
+    if not base_path:
+        return {}
+
+    coords_raw = safe_get(base_path, 7)
+    coords = None
+    if isinstance(coords_raw, list) and len(coords_raw) >= 4:
+        coords = {"latitude": coords_raw[2], "longitude": coords_raw[3]}
+
+    return {
+        "name": safe_get(base_path, 1),
+        "place_id": safe_get(base_path, 18),
+        "cid": safe_get(base_path, 0),
+        "coordinates": coords
+    }
+
+
 def extract_place_data(html_content, all_reviews=None):
     """
     High-level function to orchestrate extraction from HTML content.
+    Uses a tiered strategy: Basic JSON -> Deep JSON (if any) -> HTML.
     """
     json_str = extract_initial_json(html_content)
-    if not json_str:
-        print("Failed to extract JSON string from HTML.")
-        return None
-
-    data_blob = parse_json_data(json_str)
-    if not data_blob:
-        print("Failed to parse JSON data or find expected structure.")
-        return None
+    initial_data = None
+    basic_info = {}
     
-    # DEBUG - save the data_blob to a file for inspection
-    # with open('data_blob.json', 'w') as f:
-    #     json.dump(data_blob, f, indent=2)
-        
+    if json_str:
+        try:
+            initial_data = json.loads(json_str)
+            basic_info = get_basic_info_from_initial_json(initial_data)
+        except Exception as e:
+            print(f"Error parsing initial JSON: {e}")
+
+    # Attempt to find the deep data blob (legacy or restored structure)
+    data_blob = parse_json_data(json_str) if json_str else None
+    
+    if not data_blob:
+        print("Deep data blob not found. Proceeding with basic info and HTML extraction.")
+        # If no deep blob, we should still try to log if needed, but not fail.
+        if not os.path.exists("debug_data_blobs"):
+            os.makedirs("debug_data_blobs")
+        # Log limited samples to avoid disk bloat
+        if len(os.listdir("debug_data_blobs")) < 20:
+            with open(f"debug_data_blobs/failed_blob_{len(os.listdir('debug_data_blobs')) + 1}.json", "w") as f:
+                json.dump(json_str, f) if json_str else f.write("No JSON found")
+
     # ===== handle Business Status =====
     close_statuses = ['permanently closed', 'temporarily closed', 'closed permanently', 'closed temporarily']
-    raw_status = get_status(data_blob)
+    raw_status = get_status(data_blob) if data_blob else None
     
     # Determine final status value ('open' or 'close')
     final_status = 'open'  # Default to 'open'
     if raw_status:
-        # Use case-insensitive check for robustness
         raw_status_lower = raw_status.lower()
         if any(s in raw_status_lower for s in close_statuses):
             final_status = 'close'
     
+    # Start with basic info from JSON, then allow deep blob to override/augment
+    # Finally, use HTML fallbacks for missing fields
+    name = basic_info.get("name") or (get_main_name(data_blob) if data_blob else None) or get_name_from_html(html_content)
+    
     place_details = {
-        "name": get_main_name(data_blob),
-        "place_id": get_place_id(data_blob),
-        "coordinates": get_gps_coordinates(data_blob),
-        "address": get_complete_address(data_blob),
-        "rating": get_rating(data_blob),
-        "reviews_count": get_reviews_count(data_blob),
-        "categories": get_categories(data_blob),
-        "website": get_website(data_blob),
-        "phone": get_phone_number(data_blob),
-        "price_range": get_price_range(data_blob),
-        "thumbnail": get_thumbnail(data_blob),
-        "open_hours": get_open_hours(data_blob),
-        "images": get_images(data_blob),
-        "about": get_description(data_blob), # the beginning description text in 'About' tab
-        "attributes": get_about(data_blob), # the listed attributes in 'About' tab
+        "name": name,
+        "place_id": basic_info.get("place_id") or (get_place_id(data_blob) if data_blob else None),
+        "cid": basic_info.get("cid"),
+        "coordinates": basic_info.get("coordinates") or (get_gps_coordinates(data_blob) if data_blob else None),
+        "address": (get_complete_address(data_blob) if data_blob else None) or get_address_from_html(html_content),
+        "rating": (get_rating(data_blob) if data_blob else None) or get_rating_from_html(html_content),
+        "reviews_count": (get_reviews_count(data_blob) if data_blob else None) or get_reviews_count_from_html(html_content),
+        "categories": (get_categories(data_blob) if data_blob else []) or get_categories_from_html(html_content),
+        "website": (get_website(data_blob) if data_blob else None) or get_website_from_html(html_content),
+        "phone": (get_phone_number(data_blob) if data_blob else None) or get_phone_from_html(html_content),
+        "price_range": get_price_range(data_blob) if data_blob else None,
+        "thumbnail": get_thumbnail(data_blob) if data_blob else None,
+        "open_hours": (get_open_hours(data_blob) if data_blob else None) or get_hours_from_html(html_content),
+        "images": get_images(data_blob) if data_blob else None,
+        "about": get_description(data_blob) if data_blob else None, # the beginning description text in 'About' tab
+        "attributes": get_about(data_blob) if data_blob else None, # the listed attributes in 'About' tab
         "user_reviews": process_and_select_reviews(all_reviews) if all_reviews else [],
         "status": final_status,
     }
 
+    # Task for next phase: Add HTML extraction fallbacks here for missing fields
+    
     return {k: v for k, v in place_details.items() if v is not None}
 
 # Example usage (for testing):
