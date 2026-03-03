@@ -5,16 +5,6 @@ import re
 import random # <--- ADDED: For random selection of reviews
 import os
 
-# --- CONSTANTS FOR REVIEW SELECTION ---
-# The number of reviews to be randomly selected and stored.
-REVIEW_SELECTION_COUNT = 100
-# A larger pool of top-ranked reviews from which to randomly select.
-# This introduces randomness while still favoring high-quality reviews.
-REVIEW_CANDIDATE_POOL_SIZE = 300
-# A set of placeholder usernames for efficient lookup.
-PLACEHOLDER_USERNAMES = {"google user", "anonymous user", "unknown", "profile name"}
-
-
 def safe_get(data, *keys):
     """
     Safely retrieves nested data from a dictionary or list using a sequence of keys/indices.
@@ -39,6 +29,156 @@ def safe_get(data, *keys):
             return None
     return current
 
+# --- CONSTANTS FOR REVIEW SELECTION ---
+# The number of reviews to be randomly selected and stored.
+REVIEW_SELECTION_COUNT = 100
+# A larger pool of top-ranked reviews from which to randomly select.
+# This introduces randomness while still favoring high-quality reviews.
+REVIEW_CANDIDATE_POOL_SIZE = 300
+# A set of placeholder usernames for efficient lookup.
+PLACEHOLDER_USERNAMES = {"google user", "anonymous user", "unknown", "profile name"}
+
+# === REVIEW SORTING AND SELECTION LOGIC ==================
+def process_and_select_reviews(reviews_data):
+    """
+    Sorts, filters, and selects a random subset of reviews based on predefined quality criteria.
+    This function processes raw review data before full parsing to optimize performance.
+    
+    Args:
+        reviews_data (list): The raw list of review data from the 'listugcposts' RPC response.
+
+    Returns:
+        list: A list of 100 (or fewer) parsed user review dictionaries.
+    """
+    if not reviews_data:
+        return []
+
+    ranked_reviews = []
+    for review_item in reviews_data:
+        review = safe_get(review_item, 0)
+        if not review:
+            continue
+
+        # --- Extract only the data needed for ranking ---
+        description = safe_get(review, 2, 15, 0, 0) or ""
+        profile_pic_raw = safe_get(review, 1, 4, 5, 1)
+        date_parts = safe_get(review, 2, 2, 0, 1, 21, 6, 8)
+        author_name = (safe_get(review, 1, 4, 5, 0) or "").lower()
+
+        # --- Calculate ranking criteria based on the hierarchy ---
+        # 1. Length of review description (longer is better)
+        desc_len = len(description)
+        # 2. Has a profile picture
+        has_pic = bool(profile_pic_raw)
+        # 3. Has a specific datetime
+        has_datetime = isinstance(date_parts, list) and len(date_parts) >= 3
+        # 4. Has a "real" username (not a placeholder)
+        is_real_name = author_name not in PLACEHOLDER_USERNAMES
+        
+        # Create a sort key tuple. Python sorts tuples element-by-element,
+        # perfectly matching our hierarchical ranking need.
+        sort_key = (desc_len, has_pic, has_datetime, is_real_name)
+        
+        # Store the key along with the original raw review data
+        ranked_reviews.append((sort_key, review_item))
+
+    # Sort the list of (key, review) tuples. `reverse=True` ensures that
+    # higher lengths and True values are ranked first.
+    ranked_reviews.sort(key=lambda x: x[0], reverse=True)
+
+    # Extract the sorted raw review data
+    sorted_raw_reviews = [item for sort_key, item in ranked_reviews]
+
+    # Create a candidate pool from the top-ranked reviews
+    candidate_pool = sorted_raw_reviews[:REVIEW_CANDIDATE_POOL_SIZE]
+
+    # Randomly select the final set of reviews from the pool
+    if len(candidate_pool) <= REVIEW_SELECTION_COUNT:
+        # If the pool is smaller than our target, take all of them
+        selected_reviews_raw = candidate_pool
+    else:
+        # Otherwise, randomly sample the desired count from the high-quality pool
+        selected_reviews_raw = random.sample(candidate_pool, REVIEW_SELECTION_COUNT)
+    
+    # --- Final Step: Parse ONLY the selected high-quality reviews ---
+    # print(f"Selected {len(selected_reviews_raw)} reviews for parsing from a total of {len(reviews_data)}.")
+    return parse_user_reviews(selected_reviews_raw)
+
+
+def parse_user_reviews(reviews_data):
+    """
+    Parses a list of raw review data from the 'listugcposts' RPC response.
+    The index paths are based on the working Go implementation.
+    (This function is now called with a pre-filtered list of reviews)
+    """
+    if not isinstance(reviews_data, list):
+        return None
+
+    parsed_reviews = []
+    for review_item in reviews_data:
+        review = safe_get(review_item, 0)
+        if not review:
+            continue
+
+        author_name = safe_get(review, 1, 4, 5, 0)
+        if not author_name:
+            continue
+
+        pic_url_raw = safe_get(review, 1, 4, 5, 1)
+        profile_picture = ""
+        if pic_url_raw:
+            try:
+                profile_picture = bytes(pic_url_raw, "utf-8").decode("unicode_escape")
+            except:
+                profile_picture = pic_url_raw
+
+        # Text/Description fallback path search strategy
+        description = safe_get(review, 2, 15, 0, 0) or safe_get(review, 2, 15, 0) or safe_get(review, 3, 0)
+        
+        # Rating fallback path search strategy
+        rating = safe_get(review, 2, 0, 0) or safe_get(review, 2, 0) or safe_get(review, 1, 0, 0)
+        
+         # --- Datetime Extraction with Fallback ---
+        when = "N/A"  # Set a safe default
+
+        # Priority 1: Attempt to extract the absolute date (YYYY-MM-DD).
+        # This is the most precise data and should be preferred.
+        date_parts = safe_get(review, 2, 2, 0, 1, 21, 6, 8)
+        if isinstance(date_parts, list) and len(date_parts) >= 3:
+            try:
+                year, month, day = int(date_parts[0]), int(date_parts[1]), int(date_parts[2])
+                when = f"{year}-{month:02d}-{day:02d}"
+            except (ValueError, TypeError):
+                # The data at the path was not in the expected [Y, M, D] numeric format.
+                # We will let the code proceed to the fallback.
+                pass
+
+        # Priority 2: If absolute date extraction failed, fall back to the relative time string.
+        # The 'when' variable will still be "N/A" if the block above failed or was skipped.
+        if when == "N/A":
+            # This index path is the common location for the relative time string (e.g., "a month ago").
+            relative_time_str = safe_get(review, 1, 1)
+            if isinstance(relative_time_str, str) and relative_time_str:
+                when = relative_time_str
+
+        images = []
+        images_list = safe_get(review, 2, 2, 0, 1, 21, 7)
+        if isinstance(images_list, list):
+            for img_item in images_list:
+                img_url = safe_get(img_item)
+                if img_url and isinstance(img_url, str):
+                    images.append("https:" + img_url if img_url.startswith('//') else img_url)
+
+        parsed_reviews.append({
+            "name": author_name,
+            "profile_picture": profile_picture,
+            "rating": rating,
+            "description": description,
+            "when": when, 
+            "images": images
+        })
+
+    return parsed_reviews if parsed_reviews else None
 
 def extract_from_html(html, pattern, group=1):
     """Utility to extract a value from HTML using a regex pattern."""
@@ -345,149 +485,6 @@ def get_description(data):
     """Extracts the brief description of the business."""
     # Path based on Go project: darray[32][1][1]
     return safe_get(data, 32, 1, 1)
-
-
-# === REVIEW SORTING AND SELECTION LOGIC ==================
-def process_and_select_reviews(reviews_data):
-    """
-    Sorts, filters, and selects a random subset of reviews based on predefined quality criteria.
-    This function processes raw review data before full parsing to optimize performance.
-    
-    Args:
-        reviews_data (list): The raw list of review data from the 'listugcposts' RPC response.
-
-    Returns:
-        list: A list of 20 (or fewer) parsed user review dictionaries.
-    """
-    if not reviews_data:
-        return []
-
-    ranked_reviews = []
-    for review_item in reviews_data:
-        review = safe_get(review_item, 0)
-        if not review:
-            continue
-
-        # --- Extract only the data needed for ranking ---
-        description = safe_get(review, 2, 15, 0, 0) or ""
-        profile_pic_raw = safe_get(review, 1, 4, 5, 1)
-        date_parts = safe_get(review, 2, 2, 0, 1, 21, 6, 8)
-        author_name = (safe_get(review, 1, 4, 5, 0) or "").lower()
-
-        # --- Calculate ranking criteria based on the hierarchy ---
-        # 1. Length of review description (longer is better)
-        desc_len = len(description)
-        # 2. Has a profile picture
-        has_pic = bool(profile_pic_raw)
-        # 3. Has a specific datetime
-        has_datetime = isinstance(date_parts, list) and len(date_parts) >= 3
-        # 4. Has a "real" username (not a placeholder)
-        is_real_name = author_name not in PLACEHOLDER_USERNAMES
-        
-        # Create a sort key tuple. Python sorts tuples element-by-element,
-        # perfectly matching our hierarchical ranking need.
-        sort_key = (desc_len, has_pic, has_datetime, is_real_name)
-        
-        # Store the key along with the original raw review data
-        ranked_reviews.append((sort_key, review_item))
-
-    # Sort the list of (key, review) tuples. `reverse=True` ensures that
-    # higher lengths and True values are ranked first.
-    ranked_reviews.sort(key=lambda x: x[0], reverse=True)
-
-    # Extract the sorted raw review data
-    sorted_raw_reviews = [item for sort_key, item in ranked_reviews]
-
-    # Create a candidate pool from the top-ranked reviews
-    candidate_pool = sorted_raw_reviews[:REVIEW_CANDIDATE_POOL_SIZE]
-
-    # Randomly select the final set of reviews from the pool
-    if len(candidate_pool) <= REVIEW_SELECTION_COUNT:
-        # If the pool is smaller than our target, take all of them
-        selected_reviews_raw = candidate_pool
-    else:
-        # Otherwise, randomly sample the desired count from the high-quality pool
-        selected_reviews_raw = random.sample(candidate_pool, REVIEW_SELECTION_COUNT)
-    
-    # --- Final Step: Parse ONLY the selected high-quality reviews ---
-    print(f"Selected {len(selected_reviews_raw)} reviews for parsing from a total of {len(reviews_data)}.")
-    return parse_user_reviews(selected_reviews_raw)
-
-
-def parse_user_reviews(reviews_data):
-    """
-    Parses a list of raw review data from the 'listugcposts' RPC response.
-    The index paths are based on the working Go implementation.
-    (This function is now called with a pre-filtered list of reviews)
-    """
-    if not isinstance(reviews_data, list):
-        return None
-
-    parsed_reviews = []
-    for review_item in reviews_data:
-        review = safe_get(review_item, 0)
-        if not review:
-            continue
-
-        author_name = safe_get(review, 1, 4, 5, 0)
-        if not author_name:
-            continue
-
-        pic_url_raw = safe_get(review, 1, 4, 5, 1)
-        profile_picture = ""
-        if pic_url_raw:
-            try:
-                profile_picture = bytes(pic_url_raw, "utf-8").decode("unicode_escape")
-            except:
-                profile_picture = pic_url_raw
-
-        # Text/Description fallback path search strategy
-        description = safe_get(review, 2, 15, 0, 0) or safe_get(review, 2, 15, 0) or safe_get(review, 3, 0)
-        
-        # Rating fallback path search strategy
-        rating = safe_get(review, 2, 0, 0) or safe_get(review, 2, 0) or safe_get(review, 1, 0, 0)
-        
-         # --- Datetime Extraction with Fallback ---
-        when = "N/A"  # Set a safe default
-
-        # Priority 1: Attempt to extract the absolute date (YYYY-MM-DD).
-        # This is the most precise data and should be preferred.
-        date_parts = safe_get(review, 2, 2, 0, 1, 21, 6, 8)
-        if isinstance(date_parts, list) and len(date_parts) >= 3:
-            try:
-                year, month, day = int(date_parts[0]), int(date_parts[1]), int(date_parts[2])
-                when = f"{year}-{month:02d}-{day:02d}"
-            except (ValueError, TypeError):
-                # The data at the path was not in the expected [Y, M, D] numeric format.
-                # We will let the code proceed to the fallback.
-                pass
-
-        # Priority 2: If absolute date extraction failed, fall back to the relative time string.
-        # The 'when' variable will still be "N/A" if the block above failed or was skipped.
-        if when == "N/A":
-            # This index path is the common location for the relative time string (e.g., "a month ago").
-            relative_time_str = safe_get(review, 1, 1)
-            if isinstance(relative_time_str, str) and relative_time_str:
-                when = relative_time_str
-
-        images = []
-        images_list = safe_get(review, 2, 2, 0, 1, 21, 7)
-        if isinstance(images_list, list):
-            for img_item in images_list:
-                img_url = safe_get(img_item)
-                if img_url and isinstance(img_url, str):
-                    images.append("https:" + img_url if img_url.startswith('//') else img_url)
-
-        parsed_reviews.append({
-            "name": author_name,
-            "profile_picture": profile_picture,
-            "rating": rating,
-            "description": description,
-            "when": when, 
-            "images": images
-        })
-
-    return parsed_reviews if parsed_reviews else None
 
 
 def get_basic_info_from_initial_json(initial_data):

@@ -1,6 +1,7 @@
 # gmaps_scraper_server/browser_manager.py
 from playwright.async_api import async_playwright, Browser, Playwright
 import asyncio
+import re
 
 class BrowserManager:
     def __init__(self):
@@ -52,7 +53,7 @@ class BrowserManager:
         self.playwright = None
         print("Browser stopped.")
 
-    async def get_context(self, lang="en"):
+    async def get_context(self, lang="en", block_resources=False):
         """
         Provides a new, isolated browser context for a single request.
         This is much faster than creating a new browser.
@@ -71,6 +72,14 @@ class BrowserManager:
                 accept_downloads=False,
                 locale=lang,
             )
+            
+            if block_resources:
+                # Block only images to save bandwidth while keeping CSS/Fonts for stability
+                await context.route(
+                    re.compile(r"\.(jpg|jpeg|png|gif|svg|ico)$"), 
+                    lambda route: route.abort()
+                )
+                
             return context
 
 # Create a single, shared instance of the browser manager.

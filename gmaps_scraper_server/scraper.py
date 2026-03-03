@@ -30,17 +30,36 @@ def generate_random_id(length):
     encoded = base64.urlsafe_b64encode(random_bytes).decode('utf-8')
     return encoded.replace('=', '')[:length]
 
-async def fetch_all_reviews(page, place_link):
+async def fetch_all_reviews(page, place_link, place_id=None):
     """
     Fetches all user reviews by simulating the internal 'listugcposts' RPC call.
+    If place_id is not provided, it attempts to extract it from the place_link.
     """
-    place_id_match = re.search(r'!1s([^!]+)', place_link)
-    if not place_id_match:
-        print("Could not extract place ID for reviews RPC.")
+    if not place_id:
+        place_id_match = re.search(r'!1s([^!]+)', place_link)
+        if not place_id_match:
+            place_id_match = re.search(r'ftid=([^&]+)', place_link)
+            
+        if place_id_match:
+            place_id = place_id_match.group(1)
+        else:
+            print("Could not extract place ID for reviews RPC from link.")
+            # Fallback: Try to extract from page content if available
+            try:
+                content = await page.content()
+                json_str = extractor.extract_initial_json(content)
+                if json_str:
+                    initial_data = json.loads(json_str)
+                    basic_info = extractor.get_basic_info_from_initial_json(initial_data)
+                    place_id = basic_info.get("place_id")
+            except Exception as e:
+                print(f"Error during fallback place_id extraction: {e}")
+
+    if not place_id:
+        print("Failed to resolve place ID. Cannot fetch reviews.")
         return []
 
-    place_id = place_id_match.group(1)
-    
+    print(f"  - Using place_id for reviews: {place_id}")
     rpc_base_url = "https://www.google.com/maps/rpc/listugcposts"
     all_reviews_data = []
     next_page_token = ""
@@ -52,9 +71,9 @@ async def fetch_all_reviews(page, place_link):
         pb_components = [
             f"!1m6!1s{quote(place_id)}",
             "!6m4!4m1!1e1!4m1!1e3",
-            f"!2m2!1i20!2s{quote(next_page_token)}",
+            f"!2m2!1i10!2s{quote(next_page_token)}",
             f"!5m2!1s{request_id}!7e81",
-            "!8m9!2b1!3b1!5b1!7b1!12m4!1b1!2b1!4m1!1e1!11m0!13m1!1e1",
+            "!8m9!2b1!3b1!5b1!7b1!12m4!1b1!2b1!4m1!1e1!11m4!1e3!2e1!6m1!1i2!13m1!1e1",
         ]
         pb_param = "".join(pb_components)
         full_url = f"{rpc_base_url}?authuser=0&hl=en&pb={pb_param}"
@@ -72,7 +91,6 @@ async def fetch_all_reviews(page, place_link):
             reviews_list = extractor.safe_get(data, 2)
             if isinstance(reviews_list, list):
                 all_reviews_data.extend(reviews_list)
-                print(f"Fetched {len(reviews_list)} reviews. Total: {len(all_reviews_data)}")
 
             next_page_token = extractor.safe_get(data, 1)
             
@@ -89,6 +107,46 @@ async def fetch_all_reviews(page, place_link):
     return all_reviews_data
 
 # --- Main Scraping Logic ---
+async def scrape_reviews_only(context, link, semaphore):
+    """
+    Scrapes ONLY user reviews for a single place link.
+    Optimized for performance by skipping full place details extraction and blocking assets.
+    """
+    async with semaphore:
+        page = None
+        try:
+            page = await context.new_page()
+            print(f"Processing link for reviews only: {link}")
+            
+            # Navigate and follow redirects. 'load' is safer for session initialization.
+            await page.goto(link, wait_until='load', timeout=60000)
+            
+            resolved_url = page.url
+            print(f"  - Resolved URL: {resolved_url}")
+            
+            all_reviews = await fetch_all_reviews(page, resolved_url)
+            
+            # Process and select high-quality reviews
+            # Note: We run this in a thread to avoid blocking the event loop
+            user_reviews = await asyncio.to_thread(extractor.process_and_select_reviews, all_reviews)
+            
+            return {
+                "link": link,
+                "resolved_url": resolved_url,
+                "user_reviews": user_reviews or [],
+                "status": "success"
+            }
+
+        except PlaywrightTimeoutError:
+            print(f"  - Timeout processing: {link}")
+            return {"link": link, "status": "timeout", "error": "Timeout navigating to the link."}
+        except Exception as e:
+            print(f"  - Error processing {link}: {e}")
+            return {"link": link, "status": "error", "error": str(e)}
+        finally:
+            if page:
+                await page.close()
+
 async def scrape_google_maps(query, max_places=None, lang="en", extract_reviews=False):
     """
     Scrapes Google Maps for places based on a query using a shared browser context.
