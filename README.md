@@ -26,6 +26,15 @@ Main scraping endpoint (recommended for production)
 - `lang` (optional, default "en"): Language code for results
 - `headless` (optional, default true): Run browser in headless mode
 
+### POST `/reviews`
+Specialized endpoint for fetching only user reviews for a list of specific Google Maps URLs. Optimized for speed by skipping place details and blocking non-essential assets.
+
+**Parameters:**
+- `urls` (required, list): List of Google Maps place URLs (supports full and short links).
+- `lang` (optional, default "en"): Language code for results.
+
+**Performance Note:** This endpoint is optimized for high-concurrency hardware (e.g., 20+ simultaneous workers) and utilizes resource blocking to maximize speed.
+
 ### GET `/scrape-get`
 Alternative GET endpoint with same functionality
 
