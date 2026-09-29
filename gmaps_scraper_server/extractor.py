@@ -30,29 +30,130 @@ def safe_get(data, *keys):
     return current
 
 # --- CONSTANTS FOR REVIEW SELECTION ---
-# The number of reviews to be randomly selected and stored.
+# The default number of reviews to be harvested and stored.
 REVIEW_SELECTION_COUNT = 100
-# A larger pool of top-ranked reviews from which to randomly select.
-# This introduces randomness while still favoring high-quality reviews.
+# The upper limit pool size for review harvesting.
 REVIEW_CANDIDATE_POOL_SIZE = 300
 # A set of placeholder usernames for efficient lookup.
 PLACEHOLDER_USERNAMES = {"google user", "anonymous user", "unknown", "profile name"}
 
+# --- DOM SCRAPER SELECTORS & KEYWORDS ---
+REVIEW_WORDS = (
+    "reviews", "review",
+    "avis", "critiques",                        # French
+    "bewertungen", "rezensionen",               # German
+    "reseñas", "opiniones",                     # Spanish
+    "avaliações", "comentários",                # Portuguese
+    "recensioni",                               # Italian
+    "отзывы", "отзыв",                          # Russian
+    "opinie", "recenzje",                       # Polish
+    "yorumlar", "değerlendirmeler",             # Turkish
+    "đánh giá",                                 # Vietnamese
+    "ulasan",                                   # Indonesian
+    "recensioner",                              # Swedish
+    "anmeldelser",                              # Norwegian / Danish
+    "arvostelut",                               # Finnish
+    "κριτικές",                                 # Greek
+    "recenze",                                  # Czech
+    "recenzii",                                 # Romanian
+    "vélemények",                               # Hungarian
+    "отзиви",                                   # Bulgarian
+    "ביקורות",                                  # Hebrew
+    "ความคิดเห็น",                              # Thai
+    "クチコミ", "レビュー",                     # Japanese
+    "리뷰",                                     # Korean
+    "评论", "評價",                             # Chinese
+    "المراجعات", "آراء",                        # Arabic
+)
+
+NON_REVIEW_TAB_WORDS = (
+    "overview", "aperçu", "übersicht", "información general", "panoramica",
+    "visão geral", "обзор", "przegląd", "genel bakış", "tổng quan",
+    "ringkasan", "översikt", "oversikt", "yleiskatsaus", "επισκόπηση",
+    "přehled", "prezentare generală", "áttekintés", "миглена", "סקירה",
+    "ภาพรวม", "概要", "개요", "概览", "總覽", "نظرة عامة",
+    "menu", "menü", "carte", "menú", "меню", "thực đơn",
+    "about", "à propos", "über", "acerca de", "informazioni", "sobre",
+    "photos", "fotos", "fotografie", "zdjęcia", "fotoğraflar", "ảnh"
+)
+
+SORT_OPTIONS = {
+    "newest": [
+        "newest", "le plus récent", "die neuesten", "más recientes",
+        "più recenti", "mais recentes", "самые новые", "najnowsze",
+        "en yeni", "mới nhất", "terbaru", "nyaste", "nyeste", "uusimmat",
+        "νεότερα", "nejnovější", "cele mai recente", "legújabbak", "най-нови",
+        "החדשים ביותר", "ใหม่ที่สุด", "最新", "가장 최근", "الأحدث"
+    ]
+}
+
+MORE_BTN_SELECTORS = (
+    "button.kyuRq",
+    'button[jsaction*="expandReview"]',
+    'button[aria-expanded="false"][jsaction*="review" i]',
+)
+
+TEXT_SELECTORS = (
+    'span[jsname="bN97Pc"]',
+    'span[jsname="fbQN7e"]',
+    'div.MyEned span.wiI7pd',
+    'span.wiI7pd',
+)
+
+RATING_SELECTORS = (
+    'span[role="img"][aria-label*="star" i]',
+    'span[role="img"][aria-label*="etoile" i]',
+    'span[role="img"][aria-label*="étoile" i]',
+    'span[role="img"][aria-label]',
+    'span[class*="kvMYJc" i]',
+)
+
+DATE_SELECTORS = (
+    'span[class*="rsqaWe"]',
+    'span[class*="xRkPPb" i]',
+)
+
+PHOTO_BTN_SELECTORS = (
+    "button.Tya61d",
+    'button[aria-label*="Photo" i][style*="url"]',
+    'button[data-photo-index]',
+)
+
+OWNER_RESP_SELECTORS = (
+    "div.CDe7pd",
+    'div[class*="owner" i]',
+)
+
 # === REVIEW SORTING AND SELECTION LOGIC ==================
-def process_and_select_reviews(reviews_data):
+def process_and_select_reviews(reviews_data, max_reviews=None):
     """
-    Sorts, filters, and selects a random subset of reviews based on predefined quality criteria.
-    This function processes raw review data before full parsing to optimize performance.
+    Sorts, filters, and selects reviews.
+    
+    If input is already a list of parsed review dictionaries (from DOM extraction),
+    it preserves strict chronological 'Newest' order and returns up to max_reviews
+    without destructive random sampling.
+    
+    If input is raw Protobuf RPC list-of-lists, it falls back to hierarchical quality ranking.
     
     Args:
-        reviews_data (list): The raw list of review data from the 'listugcposts' RPC response.
+        reviews_data (list): The list of review dictionaries or raw RPC review items.
+        max_reviews (int, optional): Maximum number of reviews to return. Defaults to REVIEW_SELECTION_COUNT.
 
     Returns:
-        list: A list of 100 (or fewer) parsed user review dictionaries.
+        list: A list of parsed user review dictionaries.
     """
     if not reviews_data:
         return []
 
+    target_count = max_reviews if max_reviews is not None else REVIEW_SELECTION_COUNT
+    effective_limit = min(max(1, target_count), REVIEW_CANDIDATE_POOL_SIZE)
+
+    # Fast path: If the data already consists of parsed review dictionaries (DOM engine),
+    # maintain strict chronological order ('Newest' first) up to the requested limit.
+    if isinstance(reviews_data, list) and len(reviews_data) > 0 and isinstance(reviews_data[0], dict):
+        return reviews_data[:effective_limit]
+
+    # Legacy RPC path: rank raw nested arrays by quality heuristics
     ranked_reviews = []
     for review_item in reviews_data:
         review = safe_get(review_item, 0)
@@ -93,15 +194,14 @@ def process_and_select_reviews(reviews_data):
     candidate_pool = sorted_raw_reviews[:REVIEW_CANDIDATE_POOL_SIZE]
 
     # Randomly select the final set of reviews from the pool
-    if len(candidate_pool) <= REVIEW_SELECTION_COUNT:
+    if len(candidate_pool) <= effective_limit:
         # If the pool is smaller than our target, take all of them
         selected_reviews_raw = candidate_pool
     else:
         # Otherwise, randomly sample the desired count from the high-quality pool
-        selected_reviews_raw = random.sample(candidate_pool, REVIEW_SELECTION_COUNT)
+        selected_reviews_raw = random.sample(candidate_pool, effective_limit)
     
     # --- Final Step: Parse ONLY the selected high-quality reviews ---
-    # print(f"Selected {len(selected_reviews_raw)} reviews for parsing from a total of {len(reviews_data)}.")
     return parse_user_reviews(selected_reviews_raw)
 
 
@@ -510,7 +610,7 @@ def get_basic_info_from_initial_json(initial_data):
     }
 
 
-def extract_place_data(html_content, all_reviews=None):
+def extract_place_data(html_content, all_reviews=None, max_reviews=None):
     """
     High-level function to orchestrate extraction from HTML content.
     Uses a tiered strategy: Basic JSON -> Deep JSON (if any) -> HTML.
@@ -571,7 +671,7 @@ def extract_place_data(html_content, all_reviews=None):
         "images": get_images(data_blob) if data_blob else None,
         "about": get_description(data_blob) if data_blob else None, # the beginning description text in 'About' tab
         "attributes": get_about(data_blob) if data_blob else None, # the listed attributes in 'About' tab
-        "user_reviews": process_and_select_reviews(all_reviews) if all_reviews else [],
+        "user_reviews": process_and_select_reviews(all_reviews, max_reviews=max_reviews) if all_reviews else [],
         "status": final_status,
     }
 

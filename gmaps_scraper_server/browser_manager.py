@@ -24,7 +24,16 @@ class BrowserManager:
         
         print("Starting browser...")
         self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(headless=headless)
+        self.browser = await self.playwright.chromium.launch(
+            headless=headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-infobars",
+                "--window-size=1400,900",
+            ],
+        )
         print("Browser started successfully.")
 
     async def restart_browser(self):
@@ -67,11 +76,30 @@ class BrowserManager:
                 raise Exception("Browser is not running. Please start it first.")
             
             context = await self.browser.new_context(
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                viewport={'width': 1400, 'height': 900},
                 java_script_enabled=True,
                 accept_downloads=False,
                 locale=lang,
             )
+
+            # Inject anti-detection stealth script into every page in this context
+            stealth_script = """
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-US', 'en']
+                });
+                window.chrome = window.chrome || {
+                    app: { isInstalled: false },
+                    runtime: {}
+                };
+            """
+            await context.add_init_script(stealth_script)
             
             if block_resources:
                 # Block only images to save bandwidth while keeping CSS/Fonts for stability
