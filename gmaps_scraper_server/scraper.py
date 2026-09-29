@@ -512,16 +512,31 @@ async def scrape_reviews_from_dom(page, max_reviews=100, max_scroll_attempts=40,
                 when = (dateEl.textContent || '').trim();
             }
 
-            // Images
+            // Images / Photos extraction (aligned with google-reviews-scraper-pro)
             const images = [];
-            const photoBtns = card.querySelectorAll('button.Tya61d, button[aria-label*="Photo" i][style*="url"], button[data-photo-index]');
+            const photoBtns = card.querySelectorAll('button.Tya61d, button[aria-label*="Photo" i][style*="url"], button[data-photo-index], div[class*="photo" i] button, [style*="background-image"]');
             photoBtns.forEach(pbtn => {
                 const style = pbtn.getAttribute('style') || '';
-                const m = style.match(/url\\(["']?([^"']+)["']?\\)/);
-                if (m && m[1] && !images.includes(m[1])) {
-                    images.push(m[1]);
+                const m = style.match(/url\\(["']?([^"')]+)/);
+                if (m && m[1]) {
+                    const cleanUrl = m[1].replace(/["']/g, '').trim();
+                    if (cleanUrl && !images.includes(cleanUrl)) {
+                        images.push(cleanUrl);
+                    }
                 }
             });
+
+            // Fallback: direct img elements in card (ignoring reviewer avatar)
+            if (images.length === 0) {
+                const cardImgs = card.querySelectorAll('div[class*="photo" i] img, div.KtR338 img, button[data-photo-index] img, img[src*="googleusercontent.com/p/"], img[src*="grass-cs"], img[src*="geougc-cs"]');
+                cardImgs.forEach(img => {
+                    if (img.closest('button[data-review-id]') || img.closest('div[class*="d4r55"]')) return;
+                    const src = img.src || img.getAttribute('src') || '';
+                    if (src && !images.includes(src)) {
+                        images.push(src);
+                    }
+                });
+            }
 
             reviews.push({
                 review_id: id,
@@ -647,7 +662,7 @@ async def fetch_all_reviews(page, place_link, place_id=None, max_reviews=None):
 
     # Step 1: Ensure we are on the place page (and not locked in limited view)
     current_url = page.url or ""
-    if "google.com/maps" not in current_url:
+    if "google.com/maps" not in current_url or await _is_limited_view(page):
         await navigate_to_place_bypassing_limited_view(page, place_link)
 
     # Step 2: Activate Reviews Tab
@@ -838,7 +853,10 @@ async def scrape_place_details(context, link, extract_reviews, semaphore, max_re
         try:
             page = await context.new_page()
             print(f"Processing link: {link}")
-            await page.goto(link, wait_until='domcontentloaded')
+            if extract_reviews:
+                await navigate_to_place_bypassing_limited_view(page, link)
+            else:
+                await page.goto(link, wait_until='domcontentloaded')
             
             # Wait for main content to ensure semantic attributes are rendered
             try:

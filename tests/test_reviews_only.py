@@ -35,6 +35,11 @@ async def test_reviews_endpoint():
                         print(f"Sample review from {reviews[0].get('name')}:")
                         print(f"  Rating: {reviews[0].get('rating')}")
                         print(f"  Description: {reviews[0].get('description')[:100]}...")
+                        print(f"  Images count: {len(reviews[0].get('images', []))}")
+                        reviews_with_photos = [r for r in reviews if r.get("images")]
+                        print(f"  Total reviews with photos: {len(reviews_with_photos)}/{len(reviews)}")
+                        if reviews_with_photos:
+                            print(f"  First photo URL: {reviews_with_photos[0].get('images')[0]}")
                     else:
                         print("No reviews found for this URL.")
             else:

@@ -70,11 +70,11 @@ async def run_reviews_scrape(request: ReviewsRequest):
 
     # Use a semaphore to limit concurrency
     # Optimized for 48 threads / 64GB RAM: 16 is a safe high-performance default, configurable via env
-    concurrency_env = os.environ.get("REVIEW_SCRAPE_CONCURRENCY", "16")
+    concurrency_env = os.environ.get("REVIEW_SCRAPE_CONCURRENCY", "8")
     try:
         CONCURRENCY_LIMIT = max(1, int(concurrency_env))
     except ValueError:
-        CONCURRENCY_LIMIT = 16
+        CONCURRENCY_LIMIT = 8
     semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
     
     async def process_url(url, idx):
