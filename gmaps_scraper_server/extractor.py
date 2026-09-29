@@ -671,7 +671,7 @@ def extract_place_data(html_content, all_reviews=None, max_reviews=None):
         "images": get_images(data_blob) if data_blob else None,
         "about": get_description(data_blob) if data_blob else None, # the beginning description text in 'About' tab
         "attributes": get_about(data_blob) if data_blob else None, # the listed attributes in 'About' tab
-        "user_reviews": process_and_select_reviews(all_reviews, max_reviews=max_reviews) if all_reviews else [],
+        "user_reviews_extended": process_and_select_reviews(all_reviews, max_reviews=max_reviews) if all_reviews else [],
         "status": final_status,
     }
 

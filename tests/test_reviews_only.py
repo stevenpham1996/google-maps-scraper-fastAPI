@@ -26,7 +26,7 @@ async def test_reviews_endpoint():
                 for res in results:
                     url = res.get("link")
                     status = res.get("status")
-                    reviews = res.get("user_reviews", [])
+                    reviews = res.get("user_reviews_extended", [])
                     print(f"URL: {url}")
                     print(f"Status: {status}")
                     print(f"Reviews count: {len(reviews)}")

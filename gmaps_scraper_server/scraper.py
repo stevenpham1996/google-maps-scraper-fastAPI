@@ -709,7 +709,7 @@ async def scrape_reviews_only(context, link, semaphore, max_reviews=None, lang="
                     return {
                         "link": link,
                         "resolved_url": resolved_url,
-                        "user_reviews": [],
+                        "user_reviews_extended": [],
                         "status": "rate_limited",
                         "error": "Google rate-limit or CAPTCHA detected."
                     }
@@ -722,7 +722,7 @@ async def scrape_reviews_only(context, link, semaphore, max_reviews=None, lang="
                 return {
                     "link": link,
                     "resolved_url": resolved_url,
-                    "user_reviews": user_reviews or [],
+                    "user_reviews_extended": user_reviews or [],
                     "status": "success"
                 }
             finally:
