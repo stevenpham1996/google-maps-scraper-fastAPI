@@ -751,7 +751,7 @@ async def scrape_reviews_only(context, link, semaphore, max_reviews=None, lang="
             print(f"  - Error processing {link}: {e}")
             return {"link": link, "status": "error", "error": str(e)}
 
-async def scrape_google_maps(query, max_places=None, lang="en", extract_reviews=False, max_reviews=None):
+async def scrape_google_maps(query, max_places=None, lang="en", extract_reviews=False, max_reviews=None, num_workers=None, num_reviews=None):
     """
     Scrapes Google Maps for places based on a query using a shared browser context.
     """
@@ -828,10 +828,29 @@ async def scrape_google_maps(query, max_places=None, lang="en", extract_reviews=
         # --- Scraping Individual Places Concurrently ---
         if place_links:
             print(f"\nScraping details for {len(place_links)} places concurrently...")
-            CONCURRENCY_LIMIT = 15
+            concurrency_env = os.environ.get("SCRAPE_CONCURRENCY", "8")
+            try:
+                CONCURRENCY_LIMIT = max(1, int(concurrency_env))
+            except ValueError:
+                CONCURRENCY_LIMIT = 8
+
+            if num_workers is not None:
+                try:
+                    CONCURRENCY_LIMIT = max(1, int(num_workers))
+                except (ValueError, TypeError):
+                    pass
+
             semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
-            tasks = [scrape_place_details(context, link, extract_reviews, semaphore, max_reviews=max_reviews) for link in place_links]
+            # Overwrite REVIEW_SELECTION_COUNT if num_reviews is specified
+            effective_max_reviews = max_reviews
+            if num_reviews is not None:
+                try:
+                    effective_max_reviews = min(max(1, int(num_reviews)), extractor.REVIEW_CANDIDATE_POOL_SIZE)
+                except (ValueError, TypeError):
+                    pass
+
+            tasks = [scrape_place_details(context, link, extract_reviews, semaphore, max_reviews=effective_max_reviews) for link in place_links]
             scraped_data_list = await asyncio.gather(*tasks)
             results = [data for data in scraped_data_list if data is not None]
 
